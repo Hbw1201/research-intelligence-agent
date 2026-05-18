@@ -47,6 +47,15 @@ LLM_TIMEOUT_SECONDS=60
 LLM_MAX_RETRIES=3
 ```
 
+## Manual Daily Digest
+Run a local collect-rank-digest pass without scheduler, web UI, or WeCom push:
+
+```bash
+python scripts/run_daily_digest.py --keywords "multi-agent systems,RAG" --sources arxiv,github --max-items 5 --output-path daily.md
+```
+
+Relative output paths are saved under `reports/`. Add `--rss-feed-url https://example.com/feed.xml` when `--sources` includes `rss`.
+
 ## Next Implementation Tasks
 1. Add SQLAlchemy models and migrations.
 2. Implement collectors with retry and rate limiting.

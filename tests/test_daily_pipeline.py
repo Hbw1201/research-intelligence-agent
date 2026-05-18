@@ -1,0 +1,235 @@
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from backend.collectors.base import ResearchItem
+from backend.services.daily_pipeline import DailyIntelligencePipeline
+from backend.services.digest_service import DigestItem
+
+
+class FakeCollector:
+    def __init__(self, name: str, items: list[ResearchItem]) -> None:
+        self.name = name
+        self.items = items
+        self.calls: list[dict[str, Any]] = []
+
+    async def collect(
+        self,
+        query: str,
+        max_results: int,
+        start_date: object | None = None,
+        end_date: object | None = None,
+    ) -> list[ResearchItem]:
+        self.calls.append(
+            {
+                "query": query,
+                "max_results": max_results,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        )
+        return self.items[:max_results]
+
+
+class FakeDigestService:
+    def __init__(self) -> None:
+        self.summarize_calls: list[dict[str, Any]] = []
+        self.format_calls: list[dict[str, Any]] = []
+
+    async def summarize_items(
+        self,
+        items: list[ResearchItem],
+        user_profile: str | None = None,
+        max_items: int = 10,
+    ) -> list[DigestItem]:
+        self.summarize_calls.append(
+            {
+                "items": items,
+                "user_profile": user_profile,
+                "max_items": max_items,
+            }
+        )
+        return [
+            DigestItem(
+                title=item.title,
+                item_type=item.item_type,
+                source_name=item.source_name,
+                url=item.url,
+                one_sentence_summary=f"Summary for {item.title}",
+                key_points=[f"Point for {item.title}"],
+                relevance_reason="Matches the requested topic.",
+                recommended_action="Read the item.",
+                importance_level="medium",
+            )
+            for item in items[:max_items]
+        ]
+
+    def format_daily_digest(self, digests: list[DigestItem], title: str = "Daily Research Intelligence") -> str:
+        self.format_calls.append({"digests": digests, "title": title})
+        lines = [f"# {title}", f"count={len(digests)}"]
+        lines.extend(f"- {digest.title}: {digest.one_sentence_summary}" for digest in digests)
+        return "\n".join(lines)
+
+
+def make_item(
+    title: str,
+    url: str,
+    external_id: str | None,
+    abstract: str = "A graph retrieval paper for multi-agent systems.",
+    source_name: str = "arxiv",
+) -> ResearchItem:
+    return ResearchItem(
+        title=title,
+        abstract=abstract,
+        url=url,
+        source_name=source_name,
+        source_type="paper",
+        item_type="paper",
+        authors=["Ada Lovelace"],
+        published_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        raw_text=abstract,
+        external_id=external_id,
+        keywords=[],
+        metadata={},
+    )
+
+
+def make_pipeline(collectors: dict[str, FakeCollector], digest_service: FakeDigestService | None = None) -> DailyIntelligencePipeline:
+    return DailyIntelligencePipeline(collectors=collectors, digest_service=digest_service or FakeDigestService())
+
+
+@pytest.mark.anyio
+async def test_pipeline_deduplicates_by_url() -> None:
+    duplicate_a = make_item("First copy", "https://example.com/paper", "a")
+    duplicate_b = make_item("Second copy", "https://example.com/paper/", "b")
+    digest_service = FakeDigestService()
+    pipeline = make_pipeline(
+        {
+            "arxiv": FakeCollector("arxiv", [duplicate_a]),
+            "pubmed": FakeCollector("pubmed", [duplicate_b]),
+        },
+        digest_service=digest_service,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=10, sources=["arxiv", "pubmed"])
+
+    assert len(result.collected_items) == 2
+    assert len(result.unique_items) == 1
+    assert result.unique_items[0].title == "First copy"
+    assert len(digest_service.summarize_calls[0]["items"]) == 1
+
+
+@pytest.mark.anyio
+async def test_pipeline_deduplicates_by_external_id() -> None:
+    first = make_item("First paper", "https://example.com/one", "shared-id")
+    duplicate = make_item("Duplicate paper", "https://example.com/two", "shared-id")
+    pipeline = make_pipeline(
+        {
+            "arxiv": FakeCollector("arxiv", [first]),
+            "pubmed": FakeCollector("pubmed", [duplicate]),
+        }
+    )
+
+    result = await pipeline.run(keywords=["agent"], max_items=10, sources=["arxiv", "pubmed"])
+
+    assert len(result.unique_items) == 1
+    assert result.unique_items[0].url == "https://example.com/one"
+
+
+@pytest.mark.anyio
+async def test_pipeline_ranking_and_max_items_behavior() -> None:
+    matching = make_item(
+        "Graph retrieval agent paper",
+        "https://example.com/matching",
+        "matching",
+        abstract="Graph retrieval for multi-agent systems.",
+    )
+    unrelated = make_item(
+        "Unrelated database update",
+        "https://example.com/unrelated",
+        "unrelated",
+        abstract="An operations note without the requested topic.",
+        source_name="rss",
+    )
+    digest_service = FakeDigestService()
+    pipeline = make_pipeline({"arxiv": FakeCollector("arxiv", [unrelated, matching])}, digest_service=digest_service)
+
+    result = await pipeline.run(keywords=["graph", "retrieval"], max_items=1, sources=["arxiv"])
+
+    assert len(result.ranked_items) == 1
+    assert result.ranked_items[0].item.url == "https://example.com/matching"
+    assert len(result.digests) == 1
+    assert digest_service.summarize_calls[0]["max_items"] == 1
+
+
+@pytest.mark.anyio
+async def test_pipeline_report_formatting() -> None:
+    digest_service = FakeDigestService()
+    pipeline = make_pipeline(
+        {"arxiv": FakeCollector("arxiv", [make_item("Graph paper", "https://example.com/graph", "graph")])},
+        digest_service=digest_service,
+    )
+
+    result = await pipeline.run(keywords=["graph", "agent"], user_profile="graph agents", max_items=5, sources=["arxiv"])
+
+    assert result.report.startswith("# Daily Research Intelligence - graph, agent")
+    assert "count=1" in result.report
+    assert "- Graph paper: Summary for Graph paper" in result.report
+    assert digest_service.format_calls[0]["title"] == "Daily Research Intelligence - graph, agent"
+    assert digest_service.summarize_calls[0]["user_profile"] == "graph agents"
+
+
+@pytest.mark.anyio
+async def test_pipeline_with_mocked_collectors_and_digest_service() -> None:
+    arxiv = FakeCollector("arxiv", [make_item("Arxiv paper", "https://example.com/arxiv", "arxiv")])
+    github = FakeCollector(
+        "github",
+        [
+            ResearchItem(
+                title="owner/repo",
+                abstract="A graph retrieval repository.",
+                url="https://github.com/owner/repo",
+                source_name="github",
+                source_type="code",
+                item_type="repository",
+                authors=["owner"],
+                published_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+                raw_text="A graph retrieval repository.",
+                external_id="repo-id",
+                keywords=["Python"],
+                metadata={"stars": 10},
+            )
+        ],
+    )
+    digest_service = FakeDigestService()
+    pipeline = make_pipeline({"arxiv": arxiv, "github": github}, digest_service=digest_service)
+
+    result = await pipeline.run(
+        keywords=["graph"],
+        user_profile=None,
+        max_items=2,
+        sources=["arxiv", "github"],
+    )
+
+    assert len(arxiv.calls) == 1
+    assert len(github.calls) == 1
+    assert arxiv.calls[0]["query"] == "graph"
+    assert github.calls[0]["max_results"] >= 2
+    assert len(result.digests) == 2
+    assert "Arxiv paper" in result.report
+    assert "owner/repo" in result.report
+
+
+@pytest.mark.anyio
+async def test_pipeline_saves_report_to_output_path(tmp_path: Path) -> None:
+    output_path = tmp_path / "daily.md"
+    pipeline = make_pipeline(
+        {"arxiv": FakeCollector("arxiv", [make_item("Saved paper", "https://example.com/saved", "saved")])}
+    )
+
+    result = await pipeline.run(keywords=["saved"], max_items=1, sources=["arxiv"], output_path=output_path)
+
+    assert result.output_path == output_path
+    assert output_path.read_text(encoding="utf-8") == result.report

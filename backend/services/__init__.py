@@ -7,6 +7,13 @@ from backend.services.author_signal_service import (
     MetadataAuthorMetricsProvider,
     to_ranking_external_signals,
 )
+from backend.services.daily_pipeline import (
+    CollectorProtocol,
+    DailyIntelligencePipeline,
+    DailyPipelineOptions,
+    DailyPipelineResult,
+    DigestServiceProtocol,
+)
 from backend.services.digest_service import ChineseDigestService, DigestItem
 from backend.services.feedback import FeedbackService
 from backend.services.llm_client import (
@@ -36,7 +43,12 @@ __all__ = [
     "AuthorSignal",
     "AuthorSignalService",
     "ChineseDigestService",
+    "CollectorProtocol",
+    "DailyIntelligencePipeline",
+    "DailyPipelineOptions",
+    "DailyPipelineResult",
     "DigestItem",
+    "DigestServiceProtocol",
     "EmptyMediaMentionsProvider",
     "ExternalLLMClient",
     "InvalidLLMResponseError",
