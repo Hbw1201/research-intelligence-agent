@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
+from backend.collectors.proxy import collector_proxy_config
 
 
 logger = logging.getLogger(__name__)
@@ -89,20 +90,10 @@ class GitHubCollector(BaseCollector):
             return await work(self._client)
 
         client_kwargs: dict[str, Any] = {"timeout": self.config.timeout_seconds}
-        proxy = self._configured_proxy()
-        if proxy:
-            client_kwargs["proxy"] = proxy
-            client_kwargs["trust_env"] = False
+        client_kwargs.update(collector_proxy_config(self.config).httpx_client_kwargs())
 
         async with httpx.AsyncClient(**client_kwargs) as client:
             return await work(client)
-
-    def _configured_proxy(self) -> str | None:
-        for value in (self.config.proxy, self.config.https_proxy, self.config.http_proxy):
-            normalized = value.strip() if value else ""
-            if normalized:
-                return normalized
-        return None
 
     def _headers(self) -> dict[str, str]:
         headers = {

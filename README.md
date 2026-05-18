@@ -51,6 +51,32 @@ LLM_MAX_TOKENS_STANDARD=8192
 LLM_MAX_TOKENS_STRONG=16384
 ```
 
+## Collector Proxy Configuration
+External collectors may need an explicit proxy when Python's default environment proxy handling is unreliable. Configure one shared proxy for all collector traffic:
+
+```bash
+COLLECTOR_PROXY=http://127.0.0.1:7897
+```
+
+Or configure HTTP and HTTPS separately:
+
+```bash
+COLLECTOR_HTTP_PROXY=http://127.0.0.1:7897
+COLLECTOR_HTTPS_PROXY=http://127.0.0.1:7897
+```
+
+On Windows PowerShell for the current terminal:
+
+```powershell
+$env:COLLECTOR_PROXY = "http://127.0.0.1:7897"
+```
+
+If your internal LLM relay is reachable directly, exclude it from system proxy handling as needed:
+
+```powershell
+$env:NO_PROXY = "10.1.21.21,localhost,127.0.0.1"
+```
+
 ## Manual Daily Digest
 Run a local collect-rank-digest pass without scheduler, web UI, or WeCom push:
 

@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
+from backend.collectors.proxy import collector_proxy_config
 
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,10 @@ class PubMedCollector(BaseCollector):
         if self._client is not None:
             return await work(self._client)
 
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+        client_kwargs: dict[str, Any] = {"timeout": self.config.timeout_seconds}
+        client_kwargs.update(collector_proxy_config(self.config).httpx_client_kwargs())
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             return await work(client)
 
     @staticmethod

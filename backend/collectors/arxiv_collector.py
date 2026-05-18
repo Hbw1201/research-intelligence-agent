@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Any
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
+from backend.collectors.proxy import collector_proxy_config
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class ArxivCollector(BaseCollector):
 
     def _get_client(self, max_results: int) -> Any:
         if self._client is not None:
+            self._apply_proxy_to_client(self._client)
             return self._client
 
         arxiv = self._import_arxiv()
@@ -79,7 +81,13 @@ class ArxivCollector(BaseCollector):
             delay_seconds=max(self.config.rate_limit_delay_seconds, 0.0),
             num_retries=max(0, self.config.max_retries - 1),
         )
+        self._apply_proxy_to_client(self._client)
         return self._client
+
+    def _apply_proxy_to_client(self, client: Any) -> None:
+        session = getattr(client, "_session", None)
+        if session is not None:
+            collector_proxy_config(self.config).apply_requests_session(session)
 
     def _create_search(self, query: str, max_results: int) -> Any:
         if self._search_factory is not None:

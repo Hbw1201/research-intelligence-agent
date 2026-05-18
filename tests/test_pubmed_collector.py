@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from backend.collectors.base import CollectorConfig
 from backend.collectors.pubmed_collector import PubMedCollector
 
 
@@ -82,6 +83,22 @@ class FakePubMedClient:
         return FakeResponse(text=self.xml_text)
 
 
+class FakeAsyncClient:
+    calls: list[dict[str, Any]] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+    async def __aenter__(self) -> "FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"esearchresult": {"idlist": []}})
+
+
 @pytest.mark.anyio
 async def test_pubmed_collector_empty_results() -> None:
     client = FakePubMedClient(ids=[])
@@ -134,3 +151,35 @@ async def test_pubmed_collector_max_results_and_date_params() -> None:
     assert search_params["maxdate"] == "2026/05/18"
     assert search_params["datetype"] == "pdat"
     assert client.calls[1]["params"]["id"] == "12345,67890"
+
+
+@pytest.mark.anyio
+async def test_pubmed_collector_uses_explicit_proxy_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr("backend.collectors.pubmed_collector.httpx.AsyncClient", FakeAsyncClient)
+    collector = PubMedCollector(config=CollectorConfig(proxy="http://127.0.0.1:7897"))
+
+    items = await collector.collect(query="single cell", max_results=1)
+
+    assert items == []
+    assert FakeAsyncClient.calls == [
+        {
+            "timeout": 20.0,
+            "proxy": "http://127.0.0.1:7897",
+            "trust_env": False,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_pubmed_collector_preserves_default_client_behavior_without_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr("backend.collectors.pubmed_collector.httpx.AsyncClient", FakeAsyncClient)
+    collector = PubMedCollector(config=CollectorConfig())
+
+    items = await collector.collect(query="single cell", max_results=1)
+
+    assert items == []
+    assert FakeAsyncClient.calls == [{"timeout": 20.0}]

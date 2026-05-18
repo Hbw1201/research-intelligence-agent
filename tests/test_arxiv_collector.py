@@ -33,6 +33,7 @@ class FakeClient:
     def __init__(self, results: list[object]) -> None:
         self._results = results
         self.received_searches: list[object] = []
+        self._session = SimpleNamespace(proxies={})
 
     def results(self, search: object) -> list[object]:
         self.received_searches.append(search)
@@ -127,3 +128,40 @@ async def test_arxiv_collector_retries_failures() -> None:
 
     assert len(items) == 1
     assert flaky_client.calls == 2
+
+
+@pytest.mark.anyio
+async def test_arxiv_collector_applies_explicit_proxies_to_requests_session() -> None:
+    fake_client = FakeClient([])
+    collector = ArxivCollector(
+        config=CollectorConfig(proxy="http://127.0.0.1:7897"),
+        client=fake_client,
+        search_factory=fake_search_factory,
+    )
+
+    await collector.collect(query="single cell", max_results=1)
+
+    assert fake_client._session.proxies == {
+        "http": "http://127.0.0.1:7897",
+        "https": "http://127.0.0.1:7897",
+    }
+
+
+@pytest.mark.anyio
+async def test_arxiv_collector_applies_separate_proxies_to_requests_session() -> None:
+    fake_client = FakeClient([])
+    collector = ArxivCollector(
+        config=CollectorConfig(
+            http_proxy="http://127.0.0.1:7898",
+            https_proxy="http://127.0.0.1:7899",
+        ),
+        client=fake_client,
+        search_factory=fake_search_factory,
+    )
+
+    await collector.collect(query="single cell", max_results=1)
+
+    assert fake_client._session.proxies == {
+        "http": "http://127.0.0.1:7898",
+        "https": "http://127.0.0.1:7899",
+    }
