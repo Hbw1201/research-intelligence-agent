@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any
 
 import httpx
@@ -9,6 +10,7 @@ from backend.services.llm_client import (
     InvalidLLMResponseError,
     LLMClientError,
     MissingLLMConfigError,
+    TruncatedLLMResponseError,
 )
 
 
@@ -18,7 +20,7 @@ class FakeHTTPClient:
         self.calls: list[dict[str, Any]] = []
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
-        self.calls.append({"url": url, **kwargs})
+        self.calls.append({"url": url, **deepcopy(kwargs)})
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -28,7 +30,10 @@ class FakeHTTPClient:
 def make_settings(
     api_key: str | None = "test-api-key",
     max_retries: int = 3,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
+    max_tokens_cheap: int = 4096,
+    max_tokens_standard: int = 8192,
+    max_tokens_strong: int = 16384,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -41,6 +46,9 @@ def make_settings(
         llm_timeout_seconds=5,
         llm_max_retries=max_retries,
         llm_max_tokens=max_tokens,
+        llm_max_tokens_cheap=max_tokens_cheap,
+        llm_max_tokens_standard=max_tokens_standard,
+        llm_max_tokens_strong=max_tokens_strong,
     )
 
 
@@ -72,6 +80,48 @@ async def test_llm_client_routes_models_by_task_type() -> None:
     assert fake_http.calls[0]["json"]["model"] == "cheap-model"
     assert fake_http.calls[1]["json"]["model"] == "standard-model"
     assert fake_http.calls[2]["json"]["model"] == "strong-model"
+
+
+@pytest.mark.anyio
+async def test_llm_client_routes_max_tokens_by_task_type() -> None:
+    fake_http = FakeHTTPClient(
+        [
+            chat_response("screen"),
+            chat_response("tag"),
+            chat_response("summary"),
+            chat_response("rank"),
+            chat_response("weekly"),
+            chat_response("deep"),
+            chat_response("unknown"),
+        ]
+    )
+    client = ExternalLLMClient(
+        settings=make_settings(
+            max_tokens=1111,
+            max_tokens_cheap=2222,
+            max_tokens_standard=3333,
+            max_tokens_strong=4444,
+        ),
+        http_client=fake_http,
+    )
+
+    await client.complete("screen", task_type="screening")
+    await client.complete("tag", task_type="tagging")
+    await client.complete("summary", task_type="summarization")
+    await client.complete("rank", task_type="ranking")
+    await client.complete("weekly", task_type="weekly_report")
+    await client.complete("deep", task_type="deep_analysis")
+    await client.complete("unknown", task_type="unknown_task")
+
+    assert [call["json"]["max_tokens"] for call in fake_http.calls] == [
+        2222,
+        2222,
+        3333,
+        3333,
+        4444,
+        4444,
+        1111,
+    ]
 
 
 @pytest.mark.anyio
@@ -108,12 +158,13 @@ async def test_llm_client_parses_successful_chat_completion() -> None:
     ]
     assert call["json"]["temperature"] == 0.1
     assert call["json"]["max_tokens"] == 256
+    assert set(call["json"].keys()) == {"model", "messages", "temperature", "max_tokens"}
 
 
 @pytest.mark.anyio
 async def test_llm_client_includes_configured_max_tokens_by_default() -> None:
     fake_http = FakeHTTPClient([chat_response("hello")])
-    client = ExternalLLMClient(settings=make_settings(max_tokens=1234), http_client=fake_http)
+    client = ExternalLLMClient(settings=make_settings(max_tokens_standard=1234), http_client=fake_http)
 
     await client.complete("hello")
 
@@ -150,7 +201,8 @@ async def test_llm_client_parses_dict_content_with_text_field() -> None:
 
 
 @pytest.mark.anyio
-async def test_llm_client_parses_content_none_with_reasoning_content_fallback() -> None:
+async def test_llm_client_does_not_return_reasoning_content_as_output() -> None:
+    secret_reasoning = "SECRET GLM REASONING TRACE"
     fake_http = FakeHTTPClient(
         [
             json_response(
@@ -159,7 +211,7 @@ async def test_llm_client_parses_content_none_with_reasoning_content_fallback() 
                         {
                             "message": {
                                 "content": None,
-                                "reasoning_content": "hello from reasoning",
+                                "reasoning_content": secret_reasoning,
                             },
                             "finish_reason": "stop",
                         }
@@ -170,43 +222,16 @@ async def test_llm_client_parses_content_none_with_reasoning_content_fallback() 
     )
     client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
 
-    result = await client.complete("hello")
+    with pytest.raises(InvalidLLMResponseError, match="could not be parsed as text") as exc_info:
+        await client.complete("hello")
 
-    assert result == "hello from reasoning"
-
-
-@pytest.mark.anyio
-async def test_llm_client_retries_truncated_length_response_with_larger_max_tokens() -> None:
-    fake_http = FakeHTTPClient(
-        [
-            json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": None,
-                                "reasoning": "secret reasoning should not be returned",
-                            },
-                            "finish_reason": "length",
-                        }
-                    ]
-                }
-            ),
-            chat_response("final answer after retry"),
-        ]
-    )
-    client = ExternalLLMClient(settings=make_settings(max_tokens=128), http_client=fake_http)
-
-    result = await client.complete("hello")
-
-    assert result == "final answer after retry"
-    assert len(fake_http.calls) == 2
-    assert fake_http.calls[0]["json"]["max_tokens"] == 128
-    assert fake_http.calls[1]["json"]["max_tokens"] == 256
-
+    error_message = str(exc_info.value)
+    assert secret_reasoning not in error_message
+    assert "reasoning_content" not in error_message
 
 @pytest.mark.anyio
-async def test_llm_client_truncated_length_response_raises_sanitized_error_at_token_cap() -> None:
+async def test_llm_client_truncated_length_response_raises_clear_sanitized_error() -> None:
+    secret_prompt = "SECRET USER PROMPT"
     secret_reasoning = "SECRET GLM REASONING TRACE"
     fake_http = FakeHTTPClient(
         [
@@ -222,19 +247,75 @@ async def test_llm_client_truncated_length_response_raises_sanitized_error_at_to
                         }
                     ]
                 }
-            )
+            ),
         ]
     )
-    client = ExternalLLMClient(settings=make_settings(max_tokens=4096), http_client=fake_http)
+    client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
 
-    with pytest.raises(InvalidLLMResponseError, match="Increase LLM_MAX_TOKENS") as exc_info:
-        await client.complete("hello")
+    with pytest.raises(TruncatedLLMResponseError, match="Increase LLM_MAX_TOKENS") as exc_info:
+        await client.complete(secret_prompt)
 
     error_message = str(exc_info.value)
+    assert "LLM response was truncated before final content was produced. Increase LLM_MAX_TOKENS." in error_message
     assert "finish_reason" in error_message
     assert "content_type" in error_message
     assert secret_reasoning not in error_message
+    assert "reasoning" not in error_message
+    assert secret_prompt not in error_message
     assert "test-api-key" not in error_message
+    assert len(fake_http.calls) == 1
+
+@pytest.mark.anyio
+async def test_llm_client_truncated_length_response_raises_for_empty_string_content() -> None:
+    secret_reasoning = "SECRET GLM REASONING TRACE"
+    fake_http = FakeHTTPClient(
+        [
+            json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning": secret_reasoning,
+                            },
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
+
+    with pytest.raises(TruncatedLLMResponseError, match="Increase LLM_MAX_TOKENS") as exc_info:
+        await client.complete("hello")
+
+    error_message = str(exc_info.value)
+    assert secret_reasoning not in error_message
+
+
+@pytest.mark.anyio
+async def test_llm_client_truncated_length_response_raises_for_empty_list_content() -> None:
+    fake_http = FakeHTTPClient(
+        [
+            json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [],
+                            },
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
+
+    with pytest.raises(TruncatedLLMResponseError):
+        await client.complete("hello")
 
 
 @pytest.mark.anyio
@@ -343,6 +424,76 @@ async def test_llm_client_error_object_raises_sanitized_error() -> None:
     assert "top_level_keys" in error_message
     assert secret_key not in error_message
     assert raw_error_text not in error_message
+
+
+@pytest.mark.anyio
+async def test_llm_client_provider_max_tokens_too_large_error_retries_fallbacks() -> None:
+    fake_http = FakeHTTPClient(
+        [
+            json_response(
+                {"error": {"message": "max_tokens is too large for this model"}},
+                status_code=400,
+            ),
+            json_response(
+                {"error": {"message": "max_tokens exceeds the model limit"}},
+                status_code=400,
+            ),
+            json_response(
+                {"error": {"message": "max_tokens must be less than or equal to the token limit"}},
+                status_code=400,
+            ),
+            chat_response("fallback worked"),
+        ]
+    )
+    client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
+
+    result = await client.complete("deep report", task_type="deep_analysis")
+
+    assert result == "fallback worked"
+    assert [call["json"]["max_tokens"] for call in fake_http.calls] == [16384, 8192, 4096, 2048]
+
+
+@pytest.mark.anyio
+async def test_llm_client_provider_max_tokens_too_large_error_object_retries() -> None:
+    fake_http = FakeHTTPClient(
+        [
+            json_response({"error": {"message": "max_tokens too large"}}, status_code=200),
+            chat_response("fallback worked"),
+        ]
+    )
+    client = ExternalLLMClient(settings=make_settings(), http_client=fake_http)
+
+    result = await client.complete("summary")
+
+    assert result == "fallback worked"
+    assert [call["json"]["max_tokens"] for call in fake_http.calls] == [8192, 4096]
+
+
+@pytest.mark.anyio
+async def test_llm_client_provider_max_tokens_too_large_failure_is_sanitized(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_key = "super-secret-test-key"
+    raw_error_text = "max_tokens too large; raw provider trace SECRET DETAILS"
+    fake_http = FakeHTTPClient(
+        [
+            json_response({"error": {"message": raw_error_text}}, status_code=400),
+            json_response({"error": {"message": raw_error_text}}, status_code=400),
+            json_response({"error": {"message": raw_error_text}}, status_code=400),
+            json_response({"error": {"message": raw_error_text}}, status_code=400),
+        ]
+    )
+    client = ExternalLLMClient(settings=make_settings(api_key=secret_key), http_client=fake_http)
+
+    with pytest.raises(LLMClientError, match="fallback retries") as exc_info:
+        await client.complete("deep report", task_type="deep_analysis")
+
+    assert [call["json"]["max_tokens"] for call in fake_http.calls] == [16384, 8192, 4096, 2048]
+    error_message = str(exc_info.value)
+    assert raw_error_text not in error_message
+    assert secret_key not in error_message
+    assert raw_error_text not in caplog.text
+    assert secret_key not in caplog.text
 
 
 @pytest.mark.anyio

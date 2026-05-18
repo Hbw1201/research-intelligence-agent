@@ -89,7 +89,7 @@ async def test_summarize_item_with_mocked_llm_response() -> None:
     call = fake_llm.calls[0]
     assert call["task_type"] == "summarization"
     assert call["temperature"] == 0.2
-    assert call["max_tokens"] == 900
+    assert call["max_tokens"] is None
     assert "关注多智能体系统和图学习" in str(call["prompt"])
     assert "严格 JSON 对象" in str(call["prompt"])
 

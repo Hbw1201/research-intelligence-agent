@@ -14,6 +14,7 @@ CHEAP_TASKS = {"screening", "tagging"}
 STANDARD_TASKS = {"summarization", "ranking"}
 STRONG_TASKS = {"weekly_report", "deep_analysis"}
 DEFAULT_SYSTEM_PROMPT = "You are a concise research intelligence assistant."
+MAX_TOKEN_TOO_LARGE_FALLBACKS = (8192, 4096, 2048)
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,15 @@ class InvalidLLMResponseError(LLMClientError):
     """Raised when the relay response does not match chat completions format."""
 
 
-class LLMTruncatedResponseError(InvalidLLMResponseError):
+class TruncatedLLMResponseError(InvalidLLMResponseError):
     """Raised when the relay stops before producing final user-facing content."""
+
+
+LLMTruncatedResponseError = TruncatedLLMResponseError
+
+
+class _MaxTokensTooLargeError(LLMClientError):
+    """Internal signal for provider-side max_tokens limit rejections."""
 
 
 class ExternalLLMClient:
@@ -77,84 +85,85 @@ class ExternalLLMClient:
         request = self._coerce_request(prompt, task_type, system_prompt, temperature, max_tokens)
         api_key = self._api_key()
         model = self.select_model(request.task_type)
-        payload = self._payload(request, model, self.settings.llm_max_tokens)
+        payload = self._payload(request, model, self.select_max_tokens(request.task_type))
         attempts = max(1, self.settings.llm_max_retries)
-        retried_truncation = False
 
         last_error: Exception | None = None
-        for attempt in range(1, attempts + 1):
+        transient_attempt = 1
+        while transient_attempt <= attempts:
             logger.info(
-                "Calling LLM relay provider=%s model=%s task_type=%s attempt=%s/%s",
+                "Calling LLM relay provider=%s model=%s task_type=%s max_tokens=%s attempt=%s/%s",
                 self.settings.llm_provider,
                 model,
                 request.task_type,
-                attempt,
+                payload.get("max_tokens"),
+                transient_attempt,
                 attempts,
                 extra={
                     "provider": self.settings.llm_provider,
                     "model": model,
                     "task_type": request.task_type,
-                    "attempt": attempt,
+                    "max_tokens": payload.get("max_tokens"),
+                    "attempt": transient_attempt,
                     "max_attempts": attempts,
                 },
             )
             try:
                 response = await self._post(payload, api_key)
+                if self._is_max_tokens_too_large_response(response):
+                    self._apply_max_tokens_fallback(payload, model, request.task_type, response.status_code)
+                    continue
+
                 self._raise_for_status(response)
-                try:
-                    return self._parse_response(response)
-                except LLMTruncatedResponseError:
-                    retry_max_tokens = self._retry_max_tokens(payload.get("max_tokens"))
-                    if retried_truncation or retry_max_tokens is None:
-                        raise
-                    retried_truncation = True
-                    payload["max_tokens"] = retry_max_tokens
-                    logger.warning(
-                        "LLM relay response truncated; retrying once provider=%s model=%s task_type=%s max_tokens=%s",
-                        self.settings.llm_provider,
-                        model,
-                        request.task_type,
-                        retry_max_tokens,
-                        extra={
-                            "provider": self.settings.llm_provider,
-                            "model": model,
-                            "task_type": request.task_type,
-                            "max_tokens": retry_max_tokens,
-                        },
-                    )
-                    response = await self._post(payload, api_key)
-                    self._raise_for_status(response)
-                    return self._parse_response(response)
+                return self._parse_response(response)
+            except _MaxTokensTooLargeError:
+                self._apply_max_tokens_fallback(payload, model, request.task_type)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
-                if attempt >= attempts:
+                if transient_attempt >= attempts:
                     break
                 logger.warning(
-                    "Transient LLM relay error; retrying provider=%s model=%s task_type=%s",
+                    "Transient LLM relay error; retrying provider=%s model=%s task_type=%s max_tokens=%s",
                     self.settings.llm_provider,
                     model,
                     request.task_type,
-                    extra={"provider": self.settings.llm_provider, "model": model, "task_type": request.task_type},
+                    payload.get("max_tokens"),
+                    extra={
+                        "provider": self.settings.llm_provider,
+                        "model": model,
+                        "task_type": request.task_type,
+                        "max_tokens": payload.get("max_tokens"),
+                    },
                 )
+                transient_attempt += 1
             except httpx.HTTPStatusError as exc:
+                if self._is_max_tokens_too_large_response(exc.response):
+                    self._apply_max_tokens_fallback(payload, model, request.task_type, exc.response.status_code)
+                    continue
+
                 if not self._is_transient_status(exc.response.status_code):
-                    raise LLMClientError(f"LLM relay returned HTTP {exc.response.status_code}.") from exc
+                    raise LLMClientError(
+                        f"LLM relay returned HTTP {exc.response.status_code}."
+                    ) from exc
                 last_error = exc
-                if attempt >= attempts:
+                if transient_attempt >= attempts:
                     break
                 logger.warning(
-                    "Transient LLM relay HTTP error; retrying provider=%s model=%s task_type=%s status_code=%s",
+                    "Transient LLM relay HTTP error; retrying provider=%s model=%s task_type=%s max_tokens=%s status_code=%s",
                     self.settings.llm_provider,
                     model,
                     request.task_type,
+                    payload.get("max_tokens"),
                     exc.response.status_code,
                     extra={
                         "provider": self.settings.llm_provider,
                         "model": model,
                         "task_type": request.task_type,
+                        "max_tokens": payload.get("max_tokens"),
                         "status_code": exc.response.status_code,
                     },
                 )
+                transient_attempt += 1
 
         if isinstance(last_error, httpx.HTTPStatusError):
             raise LLMClientError(f"LLM relay returned HTTP {last_error.response.status_code}.") from last_error
@@ -168,6 +177,51 @@ class ExternalLLMClient:
         if normalized_task in STRONG_TASKS:
             return self.settings.llm_model_strong
         return self.settings.llm_model_standard
+
+    def select_max_tokens(self, task_type: str) -> int:
+        """Select the configured max token budget for a task route."""
+        normalized_task = task_type.strip().lower()
+        if normalized_task in CHEAP_TASKS:
+            return self.settings.llm_max_tokens_cheap
+        if normalized_task in STANDARD_TASKS:
+            return self.settings.llm_max_tokens_standard
+        if normalized_task in STRONG_TASKS:
+            return self.settings.llm_max_tokens_strong
+        return self.settings.llm_max_tokens
+
+    def _apply_max_tokens_fallback(
+        self,
+        payload: dict[str, object],
+        model: str,
+        task_type: str,
+        status_code: int | None = None,
+    ) -> None:
+        current_max_tokens = payload.get("max_tokens")
+        fallback_max_tokens = self._next_max_tokens_fallback(current_max_tokens)
+        if fallback_max_tokens is None:
+            raise LLMClientError(
+                "LLM relay rejected max_tokens as too large after fallback retries. "
+                f"last_max_tokens={current_max_tokens}"
+            )
+
+        logger.warning(
+            "LLM relay rejected max_tokens; retrying provider=%s model=%s task_type=%s max_tokens=%s fallback_max_tokens=%s status_code=%s",
+            self.settings.llm_provider,
+            model,
+            task_type,
+            current_max_tokens,
+            fallback_max_tokens,
+            status_code,
+            extra={
+                "provider": self.settings.llm_provider,
+                "model": model,
+                "task_type": task_type,
+                "max_tokens": current_max_tokens,
+                "fallback_max_tokens": fallback_max_tokens,
+                "status_code": status_code,
+            },
+        )
+        payload["max_tokens"] = fallback_max_tokens
 
     async def _post(self, payload: dict[str, object], api_key: str) -> httpx.Response:
         base_url = (self.settings.llm_base_url or "").rstrip("/")
@@ -209,7 +263,7 @@ class ExternalLLMClient:
                 task_type=prompt.task_type,
                 system_prompt=prompt.system_prompt,
                 temperature=prompt.temperature,
-                max_tokens=prompt.max_tokens,
+                max_tokens=max_tokens if max_tokens is not None else prompt.max_tokens,
             )
         return LLMRequest(
             prompt=prompt,
@@ -253,6 +307,8 @@ class ExternalLLMClient:
             raise InvalidLLMResponseError("LLM relay returned an invalid chat completion response.")
 
         if "error" in data:
+            if ExternalLLMClient._is_max_tokens_too_large_data(data):
+                raise _MaxTokensTooLargeError("LLM relay rejected max_tokens as too large.")
             raise LLMClientError(
                 f"LLM relay returned an error object. shape={ExternalLLMClient._response_shape(data)}"
             )
@@ -279,15 +335,11 @@ class ExternalLLMClient:
                     return content
 
                 if ExternalLLMClient._is_truncated_empty_content(choice, raw_content, content):
-                    raise LLMTruncatedResponseError(
-                        "LLM relay response was truncated before final content was produced. "
+                    raise TruncatedLLMResponseError(
+                        "LLM response was truncated before final content was produced. "
                         "Increase LLM_MAX_TOKENS. "
                         f"shape={ExternalLLMClient._response_shape(data)}"
                     )
-
-                reasoning_content = ExternalLLMClient._content_to_text(message.get("reasoning_content"))
-                if reasoning_content:
-                    return reasoning_content
 
             choice_text = ExternalLLMClient._content_to_text(choice.get("text"))
             if choice_text:
@@ -338,7 +390,7 @@ class ExternalLLMClient:
     @staticmethod
     def _response_shape(data: dict[str, Any]) -> dict[str, Any]:
         shape: dict[str, Any] = {
-            "top_level_keys": sorted(str(key) for key in data.keys()),
+            "top_level_keys": ExternalLLMClient._safe_keys(data),
         }
         choices = data.get("choices")
         choice = choices[0] if isinstance(choices, list) and choices else None
@@ -346,7 +398,7 @@ class ExternalLLMClient:
             shape["choice_type"] = type(choice).__name__
             return shape
 
-        shape["choice_keys"] = sorted(str(key) for key in choice.keys())
+        shape["choice_keys"] = ExternalLLMClient._safe_keys(choice)
         shape["finish_reason"] = choice.get("finish_reason")
         message = choice.get("message")
         if not isinstance(message, dict):
@@ -354,9 +406,13 @@ class ExternalLLMClient:
             return shape
 
         content = message.get("content")
-        shape["message_keys"] = sorted(str(key) for key in message.keys())
+        shape["message_keys"] = ExternalLLMClient._safe_keys(message)
         shape["content_type"] = type(content).__name__
         return shape
+
+    @staticmethod
+    def _safe_keys(data: dict[str, Any]) -> list[str]:
+        return sorted(str(key) for key in data.keys() if "reasoning" not in str(key).lower())
 
     @staticmethod
     def _is_truncated_empty_content(choice: dict[str, Any], raw_content: Any, parsed_content: str | None) -> bool:
@@ -367,13 +423,71 @@ class ExternalLLMClient:
         return raw_content is None or raw_content == "" or raw_content == []
 
     @staticmethod
-    def _retry_max_tokens(current_max_tokens: object) -> int | None:
+    def _next_max_tokens_fallback(current_max_tokens: object) -> int | None:
         if not isinstance(current_max_tokens, int) or current_max_tokens <= 0:
-            return None
-        retry_max_tokens = min(current_max_tokens * 2, 4096)
-        if retry_max_tokens <= current_max_tokens:
-            return None
-        return retry_max_tokens
+            return MAX_TOKEN_TOO_LARGE_FALLBACKS[0]
+        for fallback_max_tokens in MAX_TOKEN_TOO_LARGE_FALLBACKS:
+            if fallback_max_tokens < current_max_tokens:
+                return fallback_max_tokens
+        return None
+
+    @staticmethod
+    def _is_max_tokens_too_large_response(response: httpx.Response) -> bool:
+        try:
+            data = response.json()
+        except ValueError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        if "error" in data:
+            return ExternalLLMClient._is_max_tokens_too_large_data(data)
+        if response.status_code >= 400:
+            return ExternalLLMClient._looks_like_max_tokens_too_large(
+                ExternalLLMClient._collect_error_strings(data)
+            )
+        return False
+
+    @staticmethod
+    def _is_max_tokens_too_large_data(data: dict[str, Any]) -> bool:
+        error = data.get("error", data)
+        return ExternalLLMClient._looks_like_max_tokens_too_large(
+            ExternalLLMClient._collect_error_strings(error)
+        )
+
+    @staticmethod
+    def _collect_error_strings(value: Any) -> list[str]:
+        strings: list[str] = []
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                strings.extend(ExternalLLMClient._collect_error_strings(nested))
+        elif isinstance(value, list):
+            for nested in value:
+                strings.extend(ExternalLLMClient._collect_error_strings(nested))
+        return strings
+
+    @staticmethod
+    def _looks_like_max_tokens_too_large(strings: list[str]) -> bool:
+        text = " ".join(strings).lower()
+        if not text:
+            return False
+
+        token_references = ("max_tokens", "max tokens", "maximum tokens", "token limit", "tokens")
+        limit_references = (
+            "too large",
+            "exceed",
+            "exceeds",
+            "exceeded",
+            "greater than",
+            "less than or equal",
+            "maximum",
+            "at most",
+            "limit",
+        )
+        return any(reference in text for reference in token_references) and any(
+            reference in text for reference in limit_references
+        )
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:

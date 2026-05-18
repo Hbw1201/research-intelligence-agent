@@ -52,7 +52,6 @@ class ChineseDigestService:
             task_type="summarization",
             system_prompt=SYSTEM_PROMPT,
             temperature=0.2,
-            max_tokens=900,
         )
 
         try:

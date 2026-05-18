@@ -23,6 +23,7 @@ from backend.services.llm_client import (
     LLMClientError,
     LLMRequest,
     MissingLLMConfigError,
+    TruncatedLLMResponseError,
 )
 from backend.services.ranking_service import (
     RankingConfig,
@@ -69,5 +70,6 @@ __all__ = [
     "RelevanceRanker",
     "RelevanceRankingService",
     "to_ranking_external_signals",
+    "TruncatedLLMResponseError",
     "WeComPushService",
 ]
