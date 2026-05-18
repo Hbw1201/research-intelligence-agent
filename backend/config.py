@@ -20,10 +20,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://intel:intel@localhost:5432/intel"
     redis_url: str = "redis://localhost:6379/0"
 
-    llm_provider: str = "openai"
+    llm_provider: str = "zyai"
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = None
-    llm_model: str | None = None
+    llm_model_cheap: str = "glm-5.1"
+    llm_model_standard: str = "glm-5.1"
+    llm_model_strong: str = "glm-5.1"
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 3
 
     wecom_webhook_url: SecretStr | None = None
 

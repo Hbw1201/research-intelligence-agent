@@ -33,6 +33,20 @@ Expected response:
 {"status":"ok","service":"multi-agent-intel"}
 ```
 
+## LLM Relay Configuration
+The MVP uses an internal OpenAI-compatible chat completions relay. Configure it in `.env`:
+
+```bash
+LLM_PROVIDER=zyai
+LLM_API_KEY=your_api_key_here
+LLM_BASE_URL=http://10.1.21.21:3000/v1
+LLM_MODEL_CHEAP=glm-5.1
+LLM_MODEL_STANDARD=glm-5.1
+LLM_MODEL_STRONG=glm-5.1
+LLM_TIMEOUT_SECONDS=60
+LLM_MAX_RETRIES=3
+```
+
 ## Next Implementation Tasks
 1. Add SQLAlchemy models and migrations.
 2. Implement collectors with retry and rate limiting.
