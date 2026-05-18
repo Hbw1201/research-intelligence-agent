@@ -1,0 +1,41 @@
+# Multi-Agent Intel
+
+Multi-Agent Intel is an MVP scaffold for a personalized research intelligence system. It collects research updates, ranks them against user or group interests, generates Chinese digests with external LLM APIs, and pushes selected results to WeCom group robot webhooks.
+
+## Architecture
+Collectors gather source data from arXiv, PubMed, GitHub, and RSS. Services normalize, rank, summarize, record feedback, and push digests. MetaGPT orchestrates the multi-agent workflow, FastAPI exposes backend APIs, PostgreSQL stores structured records and vectors through pgvector, Redis supports cache and future task coordination, and APScheduler runs MVP scheduled jobs.
+
+## Local Setup
+```bash
+cd multi-agent-intel
+copy .env.example .env
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn backend.main:app --reload
+```
+
+## Docker Setup
+```bash
+cd multi-agent-intel
+copy .env.example .env
+docker compose up --build
+```
+
+## Healthcheck
+```bash
+curl http://localhost:8000/health
+```
+
+Expected response:
+
+```json
+{"status":"ok","service":"multi-agent-intel"}
+```
+
+## Next Implementation Tasks
+1. Add SQLAlchemy models and migrations.
+2. Implement collectors with retry and rate limiting.
+3. Implement the external LLM client and Chinese digest service.
+4. Implement relevance ranking with keyword and vector similarity.
+5. Implement scheduled workflows and WeCom push delivery.

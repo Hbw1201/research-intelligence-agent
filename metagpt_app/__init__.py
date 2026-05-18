@@ -1,0 +1,1 @@
+"""MetaGPT application package."""
