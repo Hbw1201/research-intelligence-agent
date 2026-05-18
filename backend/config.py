@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     llm_model_strong: str = "glm-5.1"
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3
+    llm_max_tokens: int = 2048
 
     wecom_webhook_url: SecretStr | None = None
 

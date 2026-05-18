@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -54,6 +54,10 @@ class InvalidLLMResponseError(LLMClientError):
     """Raised when the relay response does not match chat completions format."""
 
 
+class LLMTruncatedResponseError(InvalidLLMResponseError):
+    """Raised when the relay stops before producing final user-facing content."""
+
+
 class ExternalLLMClient:
     """OpenAI-compatible chat completions client for the internal relay."""
 
@@ -73,8 +77,9 @@ class ExternalLLMClient:
         request = self._coerce_request(prompt, task_type, system_prompt, temperature, max_tokens)
         api_key = self._api_key()
         model = self.select_model(request.task_type)
-        payload = self._payload(request, model)
+        payload = self._payload(request, model, self.settings.llm_max_tokens)
         attempts = max(1, self.settings.llm_max_retries)
+        retried_truncation = False
 
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
@@ -96,7 +101,30 @@ class ExternalLLMClient:
             try:
                 response = await self._post(payload, api_key)
                 self._raise_for_status(response)
-                return self._parse_response(response)
+                try:
+                    return self._parse_response(response)
+                except LLMTruncatedResponseError:
+                    retry_max_tokens = self._retry_max_tokens(payload.get("max_tokens"))
+                    if retried_truncation or retry_max_tokens is None:
+                        raise
+                    retried_truncation = True
+                    payload["max_tokens"] = retry_max_tokens
+                    logger.warning(
+                        "LLM relay response truncated; retrying once provider=%s model=%s task_type=%s max_tokens=%s",
+                        self.settings.llm_provider,
+                        model,
+                        request.task_type,
+                        retry_max_tokens,
+                        extra={
+                            "provider": self.settings.llm_provider,
+                            "model": model,
+                            "task_type": request.task_type,
+                            "max_tokens": retry_max_tokens,
+                        },
+                    )
+                    response = await self._post(payload, api_key)
+                    self._raise_for_status(response)
+                    return self._parse_response(response)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt >= attempts:
@@ -192,7 +220,7 @@ class ExternalLLMClient:
         )
 
     @staticmethod
-    def _payload(request: LLMRequest, model: str) -> dict[str, object]:
+    def _payload(request: LLMRequest, model: str, default_max_tokens: int | None = None) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": model,
             "messages": [
@@ -202,8 +230,9 @@ class ExternalLLMClient:
         }
         if request.temperature is not None:
             payload["temperature"] = request.temperature
-        if request.max_tokens is not None:
-            payload["max_tokens"] = request.max_tokens
+        effective_max_tokens = request.max_tokens if request.max_tokens is not None else default_max_tokens
+        if effective_max_tokens is not None and effective_max_tokens > 0:
+            payload["max_tokens"] = effective_max_tokens
         return payload
 
     @staticmethod
@@ -217,12 +246,134 @@ class ExternalLLMClient:
     def _parse_response(response: httpx.Response) -> str:
         try:
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
+        except ValueError as exc:
             raise InvalidLLMResponseError("LLM relay returned an invalid chat completion response.") from exc
-        if not isinstance(content, str):
-            raise InvalidLLMResponseError("LLM relay returned non-text chat completion content.")
-        return content
+
+        if not isinstance(data, dict):
+            raise InvalidLLMResponseError("LLM relay returned an invalid chat completion response.")
+
+        if "error" in data:
+            raise LLMClientError(
+                f"LLM relay returned an error object. shape={ExternalLLMClient._response_shape(data)}"
+            )
+
+        parsed_content = ExternalLLMClient._extract_response_text(data)
+        if parsed_content is not None:
+            return parsed_content
+
+        raise InvalidLLMResponseError(
+            f"LLM relay returned chat completion content that could not be parsed as text. "
+            f"shape={ExternalLLMClient._response_shape(data)}"
+        )
+
+    @staticmethod
+    def _extract_response_text(data: dict[str, Any]) -> str | None:
+        choices = data.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        if isinstance(choice, dict):
+            message = choice.get("message")
+            if isinstance(message, dict):
+                raw_content = message.get("content")
+                content = ExternalLLMClient._content_to_text(raw_content)
+                if content:
+                    return content
+
+                if ExternalLLMClient._is_truncated_empty_content(choice, raw_content, content):
+                    raise LLMTruncatedResponseError(
+                        "LLM relay response was truncated before final content was produced. "
+                        "Increase LLM_MAX_TOKENS. "
+                        f"shape={ExternalLLMClient._response_shape(data)}"
+                    )
+
+                reasoning_content = ExternalLLMClient._content_to_text(message.get("reasoning_content"))
+                if reasoning_content:
+                    return reasoning_content
+
+            choice_text = ExternalLLMClient._content_to_text(choice.get("text"))
+            if choice_text:
+                return choice_text
+
+        output_text = ExternalLLMClient._content_to_text(data.get("output_text"))
+        if output_text:
+            return output_text
+
+        return None
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str | None:
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                text = ExternalLLMClient._content_part_to_text(part)
+                if text is None:
+                    return None
+                parts.append(text)
+            return "".join(parts)
+
+        if isinstance(content, dict):
+            return ExternalLLMClient._content_part_to_text(content)
+
+        return None
+
+    @staticmethod
+    def _content_part_to_text(part: Any) -> str | None:
+        if isinstance(part, str):
+            return part
+        if not isinstance(part, dict):
+            return None
+
+        text = part.get("text")
+        if isinstance(text, str):
+            return text
+
+        nested_content = part.get("content")
+        if isinstance(nested_content, str):
+            return nested_content
+
+        return None
+
+    @staticmethod
+    def _response_shape(data: dict[str, Any]) -> dict[str, Any]:
+        shape: dict[str, Any] = {
+            "top_level_keys": sorted(str(key) for key in data.keys()),
+        }
+        choices = data.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        if not isinstance(choice, dict):
+            shape["choice_type"] = type(choice).__name__
+            return shape
+
+        shape["choice_keys"] = sorted(str(key) for key in choice.keys())
+        shape["finish_reason"] = choice.get("finish_reason")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            shape["message_type"] = type(message).__name__
+            return shape
+
+        content = message.get("content")
+        shape["message_keys"] = sorted(str(key) for key in message.keys())
+        shape["content_type"] = type(content).__name__
+        return shape
+
+    @staticmethod
+    def _is_truncated_empty_content(choice: dict[str, Any], raw_content: Any, parsed_content: str | None) -> bool:
+        if choice.get("finish_reason") != "length":
+            return False
+        if parsed_content:
+            return False
+        return raw_content is None or raw_content == "" or raw_content == []
+
+    @staticmethod
+    def _retry_max_tokens(current_max_tokens: object) -> int | None:
+        if not isinstance(current_max_tokens, int) or current_max_tokens <= 0:
+            return None
+        retry_max_tokens = min(current_max_tokens * 2, 4096)
+        if retry_max_tokens <= current_max_tokens:
+            return None
+        return retry_max_tokens
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:
