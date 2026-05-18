@@ -22,6 +22,7 @@ The MVP should include:
 - weekly report generation
 - WeCom group webhook push
 - feedback API
+- lightweight web admin dashboard
 
 ## Out of Scope for MVP
 Do not implement:
@@ -29,6 +30,7 @@ Do not implement:
 - unofficial WeChat protocol
 - local LLM inference
 - complex frontend
+- React/Vite single-page application
 - full PDF deep reading for all papers
 - large-scale knowledge graph
 - multi-tenant billing
@@ -37,6 +39,7 @@ Do not implement:
 ## Tech Stack
 - Python 3.10 or 3.11
 - FastAPI
+- Jinja2 templates for lightweight admin UI
 - PostgreSQL + pgvector
 - Redis
 - MetaGPT
@@ -72,9 +75,27 @@ Required roles:
 - RankerAgent: scores relevance and importance.
 - DigestAgent: creates Chinese digests.
 - CriticAgent: checks factuality and output quality.
+- SourceDiscoveryAgent: future agent that recommends new websites, RSS feeds, and GitHub sources for human approval.
+
+## Web Admin Dashboard
+The MVP should use FastAPI + Jinja2 templates for a lightweight server-rendered admin dashboard.
+
+The dashboard should manage:
+- sources
+- topics/profiles
+- collected items
+- generated digests
+- manual collection
+- manual digest generation
+- manual WeCom push preview
+
+Keep the admin UI simple and operational. React/Vite can be considered later if the dashboard grows into a richer product interface, but it is not part of the MVP frontend plan.
 
 ## Daily Workflow
 collect -> normalize -> deduplicate -> store -> analyze -> rank -> digest -> push -> record feedback
+
+Manual admin workflow:
+admin review -> manual collect -> manual digest -> push preview -> approve/send
 
 ## Output Language
 User-facing summaries should be Chinese by default.

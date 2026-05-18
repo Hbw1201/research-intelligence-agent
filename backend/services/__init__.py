@@ -9,7 +9,13 @@ from backend.services.llm_client import (
     LLMRequest,
     MissingLLMConfigError,
 )
-from backend.services.ranking import RelevanceRanker
+from backend.services.ranking_service import (
+    RankingConfig,
+    RankingExternalSignals,
+    RankedItem,
+    RelevanceRanker,
+    RelevanceRankingService,
+)
 from backend.services.wecom import PushMessage, WeComPushService
 
 __all__ = [
@@ -22,6 +28,10 @@ __all__ = [
     "LLMRequest",
     "MissingLLMConfigError",
     "PushMessage",
+    "RankingConfig",
+    "RankingExternalSignals",
+    "RankedItem",
     "RelevanceRanker",
+    "RelevanceRankingService",
     "WeComPushService",
 ]

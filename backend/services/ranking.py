@@ -1,8 +1,16 @@
-from backend.collectors.base import CollectedItem
+from backend.services.ranking_service import (
+    RankingConfig,
+    RankingExternalSignals,
+    RankedItem,
+    RelevanceRanker,
+    RelevanceRankingService,
+)
 
 
-class RelevanceRanker:
-    """Placeholder relevance ranking service."""
-
-    async def rank(self, items: list[CollectedItem], profile_id: str) -> list[CollectedItem]:
-        raise NotImplementedError("Relevance ranking will be implemented later.")
+__all__ = [
+    "RankingConfig",
+    "RankingExternalSignals",
+    "RankedItem",
+    "RelevanceRanker",
+    "RelevanceRankingService",
+]
