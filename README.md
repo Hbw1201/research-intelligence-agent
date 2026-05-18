@@ -80,13 +80,27 @@ $env:NO_PROXY = "10.1.21.21,localhost,127.0.0.1"
 Collector request timeouts can be tuned with `COLLECTOR_TIMEOUT_SECONDS`, and arXiv can be overridden with `ARXIV_TIMEOUT_SECONDS`.
 
 ## Manual Daily Digest
-Run a local collect-rank-digest pass without scheduler, web UI, or WeCom push:
+Run a local collect-rank-digest pass without scheduler or web UI:
 
 ```bash
 python scripts/run_daily_digest.py --keywords "multi-agent systems,RAG" --sources arxiv,github --max-items 5 --output-path daily.md
 ```
 
 Relative output paths are saved under `reports/`. Add `--rss-feed-url https://example.com/feed.xml` when `--sources` includes `rss`.
+
+To push the generated digest to a configured WeCom group robot, set `WECOM_WEBHOOK_URL` in `.env` and pass `--push-wecom` explicitly:
+
+```bash
+python scripts/run_daily_digest.py --keywords "multi-agent systems,RAG" --sources github --max-items 5 --push-wecom --wecom-title "今日科研情报"
+```
+
+To push an existing saved report:
+
+```bash
+python scripts/push_report_wecom.py --report-path reports/github_pubmed_wecom_test.md --message-type markdown --title "今日科研情报"
+```
+
+Long markdown reports are split into UTF-8 byte-sized chunks before delivery. Tune the per-message budget with `WECOM_MARKDOWN_MAX_BYTES` if your WeCom robot rejects oversized content.
 
 ## Next Implementation Tasks
 1. Add SQLAlchemy models and migrations.

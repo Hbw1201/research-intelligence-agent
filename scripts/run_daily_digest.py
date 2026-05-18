@@ -19,6 +19,7 @@ from backend.config import get_settings
 from backend.services.daily_pipeline import CollectorProtocol, DailyIntelligencePipeline
 from backend.services.digest_service import ChineseDigestService
 from backend.services.llm_client import ExternalLLMClient
+from backend.services.wecom import PushMessage, WeComPushService
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +47,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional output path. Relative paths are saved under reports/.",
     )
+    parser.add_argument("--push-wecom", action="store_true", help="Push the generated report to WeCom.")
+    parser.add_argument("--wecom-title", default="今日科研情报", help="Title used for the WeCom push message.")
     return parser.parse_args()
 
 
@@ -105,6 +108,9 @@ async def run() -> None:
     print(result.report)
     if result.output_path:
         print(f"\nSaved report: {result.output_path}")
+    if args.push_wecom:
+        await WeComPushService().send_markdown(PushMessage(title=args.wecom_title, markdown=result.report))
+        print("\nPushed WeCom markdown digest.")
 
 
 def split_csv(value: str) -> list[str]:
