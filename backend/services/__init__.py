@@ -1,6 +1,6 @@
 """Service layer placeholders."""
 
-from backend.services.digest import ChineseDigestService
+from backend.services.digest_service import ChineseDigestService, DigestItem
 from backend.services.feedback import FeedbackService
 from backend.services.llm_client import (
     ExternalLLMClient,
@@ -14,6 +14,7 @@ from backend.services.wecom import PushMessage, WeComPushService
 
 __all__ = [
     "ChineseDigestService",
+    "DigestItem",
     "ExternalLLMClient",
     "InvalidLLMResponseError",
     "LLMClientError",
