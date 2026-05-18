@@ -77,6 +77,8 @@ If your internal LLM relay is reachable directly, exclude it from system proxy h
 $env:NO_PROXY = "10.1.21.21,localhost,127.0.0.1"
 ```
 
+Collector request timeouts can be tuned with `COLLECTOR_TIMEOUT_SECONDS`, and arXiv can be overridden with `ARXIV_TIMEOUT_SECONDS`.
+
 ## Manual Daily Digest
 Run a local collect-rank-digest pass without scheduler, web UI, or WeCom push:
 

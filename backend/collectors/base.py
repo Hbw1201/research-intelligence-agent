@@ -13,6 +13,8 @@ class CollectorConfig:
     max_retries: int = 3
     timeout_seconds: float = 20.0
     rate_limit_delay_seconds: float = 0.0
+    collector_timeout_seconds: float | None = None
+    arxiv_timeout_seconds: float | None = None
     proxy: str | None = None
     http_proxy: str | None = None
     https_proxy: str | None = None

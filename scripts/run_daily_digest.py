@@ -57,6 +57,8 @@ def build_collector_config() -> CollectorConfig:
     return CollectorConfig(
         max_retries=settings.collector_max_retries,
         rate_limit_delay_seconds=delay_seconds,
+        collector_timeout_seconds=settings.collector_timeout_seconds,
+        arxiv_timeout_seconds=settings.arxiv_timeout_seconds,
         proxy=settings.collector_proxy,
         http_proxy=settings.collector_http_proxy,
         https_proxy=settings.collector_https_proxy,

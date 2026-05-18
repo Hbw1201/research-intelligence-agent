@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     collector_max_retries: int = 3
     collector_rate_limit_per_minute: int = 30
+    collector_timeout_seconds: float | None = None
+    arxiv_timeout_seconds: float | None = None
     collector_proxy: str | None = None
     collector_http_proxy: str | None = None
     collector_https_proxy: str | None = None
