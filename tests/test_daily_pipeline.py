@@ -33,6 +33,34 @@ class FakeCollector:
         return self.items[:max_results]
 
 
+class FlakyCollector:
+    def __init__(self, name: str, outcomes: list[list[ResearchItem] | Exception]) -> None:
+        self.name = name
+        self.outcomes = outcomes
+        self.calls: list[dict[str, Any]] = []
+
+    async def collect(
+        self,
+        query: str,
+        max_results: int,
+        start_date: object | None = None,
+        end_date: object | None = None,
+    ) -> list[ResearchItem]:
+        self.calls.append(
+            {
+                "query": query,
+                "max_results": max_results,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        )
+        outcome_index = min(len(self.calls) - 1, len(self.outcomes) - 1)
+        outcome = self.outcomes[outcome_index]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome[:max_results]
+
+
 class FakeDigestService:
     def __init__(self) -> None:
         self.summarize_calls: list[dict[str, Any]] = []
@@ -97,7 +125,11 @@ def make_item(
 
 
 def make_pipeline(collectors: dict[str, FakeCollector], digest_service: FakeDigestService | None = None) -> DailyIntelligencePipeline:
-    return DailyIntelligencePipeline(collectors=collectors, digest_service=digest_service or FakeDigestService())
+    return DailyIntelligencePipeline(
+        collectors=collectors,
+        digest_service=digest_service or FakeDigestService(),
+        failed_source_retry_delay_seconds=0,
+    )
 
 
 @pytest.mark.anyio
@@ -233,3 +265,91 @@ async def test_pipeline_saves_report_to_output_path(tmp_path: Path) -> None:
 
     assert result.output_path == output_path
     assert output_path.read_text(encoding="utf-8") == result.report
+
+
+@pytest.mark.anyio
+async def test_pipeline_continues_when_one_collector_fails_but_another_succeeds() -> None:
+    arxiv = FakeCollector("arxiv", [make_item("Working paper", "https://example.com/working", "working")])
+    pubmed = FlakyCollector("pubmed", [TimeoutError("source timed out")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": arxiv, "pubmed": pubmed},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=0,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=5, sources=["pubmed", "arxiv"])
+
+    assert len(result.digests) == 1
+    assert result.collector_errors == {"pubmed": "TimeoutError: source timed out"}
+    assert "Working paper" in result.report
+    assert "Collector warnings" in result.report
+
+
+@pytest.mark.anyio
+async def test_failed_collector_succeeds_during_deferred_retry() -> None:
+    item = make_item("Retry paper", "https://example.com/retry", "retry")
+    arxiv = FlakyCollector("arxiv", [TimeoutError("temporary timeout"), [item]])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": arxiv},
+        digest_service=FakeDigestService(),
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["retry"], max_items=5, sources=["arxiv"])
+
+    assert len(arxiv.calls) == 2
+    assert result.collector_errors == {}
+    assert result.collected_items == [item]
+    assert "Collector warnings" not in result.report
+
+
+@pytest.mark.anyio
+async def test_failed_collector_still_fails_after_five_retries_and_records_error() -> None:
+    working = FakeCollector("arxiv", [make_item("Working paper", "https://example.com/ok", "ok")])
+    failing = FlakyCollector("pubmed", [TimeoutError("still slow")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": working, "pubmed": failing},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=5,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=5, sources=["arxiv", "pubmed"])
+
+    assert len(failing.calls) == 6
+    assert result.collector_errors == {"pubmed": "TimeoutError: still slow"}
+    assert "## Collector warnings" in result.report
+    assert "- pubmed: TimeoutError: still slow" in result.report
+
+
+@pytest.mark.anyio
+async def test_all_collectors_fail_raises_clear_runtime_error() -> None:
+    arxiv = FlakyCollector("arxiv", [TimeoutError("arxiv slow")])
+    pubmed = FlakyCollector("pubmed", [RuntimeError("pubmed unavailable")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": arxiv, "pubmed": pubmed},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=1,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    with pytest.raises(RuntimeError, match="All selected collectors failed: arxiv, pubmed"):
+        await pipeline.run(keywords=["graph"], max_items=5, sources=["arxiv", "pubmed"])
+
+
+@pytest.mark.anyio
+async def test_collector_warnings_appear_in_markdown_report() -> None:
+    arxiv = FakeCollector("arxiv", [make_item("Warning paper", "https://example.com/warning", "warning")])
+    github = FlakyCollector("github", [RuntimeError("rate limited")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": arxiv, "github": github},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=1,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=5, sources=["arxiv", "github"])
+
+    assert "## Collector warnings" in result.report
+    assert "- github: RuntimeError: rate limited" in result.report

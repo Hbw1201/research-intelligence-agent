@@ -9,6 +9,7 @@ from backend.services.author_signal_service import (
 )
 from backend.services.daily_pipeline import (
     CollectorProtocol,
+    CollectorRunResult,
     DailyIntelligencePipeline,
     DailyPipelineOptions,
     DailyPipelineResult,
@@ -44,6 +45,7 @@ __all__ = [
     "AuthorSignalService",
     "ChineseDigestService",
     "CollectorProtocol",
+    "CollectorRunResult",
     "DailyIntelligencePipeline",
     "DailyPipelineOptions",
     "DailyPipelineResult",

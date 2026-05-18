@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -45,6 +46,7 @@ class DailyPipelineResult:
     """Structured result for the manual daily intelligence run."""
 
     collected_items: list[ResearchItem]
+    collector_errors: dict[str, str]
     unique_items: list[ResearchItem]
     ranked_items: list[RankedItem]
     digests: list[DigestItem]
@@ -61,6 +63,16 @@ class DailyPipelineOptions:
     max_items: int = 10
     sources: list[str] = field(default_factory=list)
     output_path: str | Path | None = None
+    max_failed_source_retries: int = 5
+    failed_source_retry_delay_seconds: float = 2.0
+
+
+@dataclass(frozen=True)
+class CollectorRunResult:
+    """Items and final source errors from collector execution."""
+
+    items: list[ResearchItem]
+    collector_errors: dict[str, str]
 
 
 class DailyIntelligencePipeline:
@@ -72,11 +84,15 @@ class DailyIntelligencePipeline:
         digest_service: DigestServiceProtocol,
         ranking_service: RelevanceRankingService | None = None,
         candidate_pool_multiplier: int = 5,
+        max_failed_source_retries: int = 5,
+        failed_source_retry_delay_seconds: float = 2.0,
     ) -> None:
         self.collectors = {name.strip().lower(): collector for name, collector in collectors.items()}
         self.digest_service = digest_service
         self.ranking_service = ranking_service or RelevanceRankingService()
         self.candidate_pool_multiplier = max(1, candidate_pool_multiplier)
+        self.max_failed_source_retries = max(0, max_failed_source_retries)
+        self.failed_source_retry_delay_seconds = max(0.0, failed_source_retry_delay_seconds)
 
     async def run(
         self,
@@ -93,6 +109,8 @@ class DailyIntelligencePipeline:
             max_items=max_items,
             sources=self._normalize_sources(sources),
             output_path=output_path,
+            max_failed_source_retries=self.max_failed_source_retries,
+            failed_source_retry_delay_seconds=self.failed_source_retry_delay_seconds,
         )
         if not options.keywords:
             raise ValueError("At least one keyword is required.")
@@ -102,7 +120,13 @@ class DailyIntelligencePipeline:
         selected_sources = options.sources or list(self.collectors.keys())
         query = " ".join(options.keywords)
         collection_limit = options.max_items * self.candidate_pool_multiplier
-        collected_items = await self._collect_items(query, collection_limit, selected_sources)
+        collection_result = await self._collect_items(query, collection_limit, selected_sources, options)
+        collected_items = collection_result.items
+        collector_errors = collection_result.collector_errors
+        if not collected_items and len(collector_errors) == len(selected_sources):
+            failed_sources = ", ".join(sorted(collector_errors))
+            raise RuntimeError(f"All selected collectors failed: {failed_sources}")
+
         unique_items = self.deduplicate_items(collected_items)
         ranked_items = self.ranking_service.rank_items(
             unique_items,
@@ -116,11 +140,12 @@ class DailyIntelligencePipeline:
             user_profile=options.user_profile,
             max_items=options.max_items,
         )
-        report = self.format_report(options.keywords, digests)
+        report = self.format_report(options.keywords, digests, collector_errors)
         saved_path = self.save_report(report, options.output_path) if options.output_path else None
 
         return DailyPipelineResult(
             collected_items=collected_items,
+            collector_errors=collector_errors,
             unique_items=unique_items,
             ranked_items=ranked_items,
             digests=digests,
@@ -128,14 +153,57 @@ class DailyIntelligencePipeline:
             output_path=saved_path,
         )
 
-    async def _collect_items(self, query: str, max_items: int, sources: list[str]) -> list[ResearchItem]:
+    async def _collect_items(
+        self,
+        query: str,
+        max_items: int,
+        sources: list[str],
+        options: DailyPipelineOptions,
+    ) -> CollectorRunResult:
         collected_items: list[ResearchItem] = []
+        failed_collectors: dict[str, str] = {}
         for source in sources:
             collector = self.collectors.get(source)
             if collector is None:
                 raise ValueError(f"Unknown collector source: {source}")
-            collected_items.extend(await collector.collect(query=query, max_results=max_items))
-        return collected_items
+            try:
+                collected_items.extend(await collector.collect(query=query, max_results=max_items))
+            except Exception as exc:  # noqa: BLE001 - isolate collector failures for retry.
+                failed_collectors[source] = self._error_message(exc)
+
+        final_errors = await self._retry_failed_collectors(
+            failed_collectors,
+            query,
+            max_items,
+            options,
+            collected_items,
+        )
+        return CollectorRunResult(items=collected_items, collector_errors=final_errors)
+
+    async def _retry_failed_collectors(
+        self,
+        failed_collectors: dict[str, str],
+        query: str,
+        max_items: int,
+        options: DailyPipelineOptions,
+        collected_items: list[ResearchItem],
+    ) -> dict[str, str]:
+        final_errors: dict[str, str] = {}
+        for source in failed_collectors:
+            collector = self.collectors[source]
+            last_error = failed_collectors[source]
+            succeeded = False
+            for attempt in range(1, options.max_failed_source_retries + 1):
+                await self._sleep_before_retry(attempt, options.failed_source_retry_delay_seconds)
+                try:
+                    collected_items.extend(await collector.collect(query=query, max_results=max_items))
+                    succeeded = True
+                    break
+                except Exception as exc:  # noqa: BLE001 - retry collector failures independently.
+                    last_error = self._error_message(exc)
+            if not succeeded:
+                final_errors[source] = last_error
+        return final_errors
 
     @staticmethod
     def deduplicate_items(items: list[ResearchItem]) -> list[ResearchItem]:
@@ -160,11 +228,23 @@ class DailyIntelligencePipeline:
 
         return unique_items
 
-    def format_report(self, keywords: list[str], digests: list[DigestItem]) -> str:
+    def format_report(
+        self,
+        keywords: list[str],
+        digests: list[DigestItem],
+        collector_errors: dict[str, str] | None = None,
+    ) -> str:
         """Format the final markdown daily report through the digest service."""
         topic = ", ".join(keywords)
         title = f"Daily Research Intelligence - {topic}" if topic else "Daily Research Intelligence"
-        return self.digest_service.format_daily_digest(digests, title=title)
+        report = self.digest_service.format_daily_digest(digests, title=title)
+        if not collector_errors:
+            return report
+
+        warning_lines = ["", "## Collector warnings"]
+        for source, error in sorted(collector_errors.items()):
+            warning_lines.append(f"- {source}: {error}")
+        return f"{report}\n" + "\n".join(warning_lines)
 
     @staticmethod
     def save_report(report: str, output_path: str | Path) -> Path:
@@ -213,9 +293,24 @@ class DailyIntelligencePipeline:
             return ""
         return external_id.strip().lower()
 
+    @staticmethod
+    async def _sleep_before_retry(attempt: int, base_delay_seconds: float) -> None:
+        if base_delay_seconds <= 0:
+            return
+        delay = base_delay_seconds * min(2 ** (attempt - 1), 8)
+        await asyncio.sleep(delay)
+
+    @staticmethod
+    def _error_message(exc: Exception) -> str:
+        message = str(exc).strip()
+        if not message:
+            return exc.__class__.__name__
+        return f"{exc.__class__.__name__}: {message}"
+
 
 __all__ = [
     "CollectorProtocol",
+    "CollectorRunResult",
     "DailyIntelligencePipeline",
     "DailyPipelineOptions",
     "DailyPipelineResult",
