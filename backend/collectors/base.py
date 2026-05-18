@@ -1,25 +1,38 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 @dataclass(frozen=True)
 class CollectorConfig:
     """Shared collector runtime constraints."""
 
-    max_retries: int
-    rate_limit_per_minute: int
+    max_retries: int = 3
+    timeout_seconds: float = 20.0
+    rate_limit_delay_seconds: float = 0.0
 
 
-@dataclass(frozen=True)
-class CollectedItem:
-    """Normalized placeholder shape for collected research updates."""
+class ResearchItem(BaseModel):
+    """Normalized schema for collected research updates."""
 
-    source: str
     title: str
-    url: str | None = None
-    summary: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    abstract: str | None = None
+    url: str
+    source_name: str
+    source_type: str
+    item_type: str
+    authors: list[str] = Field(default_factory=list)
+    published_at: datetime | None = None
+    raw_text: str | None = None
+    external_id: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+CollectedItem = ResearchItem
 
 
 class BaseCollector(ABC):
@@ -31,5 +44,11 @@ class BaseCollector(ABC):
         self.config = config
 
     @abstractmethod
-    async def collect(self) -> list[CollectedItem]:
+    async def collect(
+        self,
+        query: str,
+        max_results: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[ResearchItem]:
         """Collect and normalize source items."""

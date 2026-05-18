@@ -1,7 +1,7 @@
 """Collector interfaces and source-specific placeholders."""
 
 from backend.collectors.arxiv_collector import ArxivCollector
-from backend.collectors.base import BaseCollector, CollectedItem, CollectorConfig
+from backend.collectors.base import BaseCollector, CollectedItem, CollectorConfig, ResearchItem
 from backend.collectors.github_collector import GitHubCollector
 from backend.collectors.pubmed_collector import PubMedCollector
 from backend.collectors.rss_collector import RSSCollector
@@ -13,5 +13,6 @@ __all__ = [
     "CollectorConfig",
     "GitHubCollector",
     "PubMedCollector",
+    "ResearchItem",
     "RSSCollector",
 ]
