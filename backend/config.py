@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     llm_max_tokens_strong: int = 16384
 
     wecom_webhook_url: SecretStr | None = None
+    wecom_timeout_seconds: float = 10.0
+    wecom_max_retries: int = 3
 
     collector_max_retries: int = 3
     collector_rate_limit_per_minute: int = 30
