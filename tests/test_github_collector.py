@@ -3,7 +3,10 @@ from typing import Any
 
 import pytest
 
+from backend.collectors.base import CollectorConfig
 from backend.collectors.github_collector import GitHubCollector
+from backend.config import get_settings
+from scripts.run_daily_digest import build_collector_config
 
 
 class FakeResponse:
@@ -25,6 +28,23 @@ class FakeGitHubClient:
     async def get(self, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"url": url, **kwargs})
         return FakeResponse({"items": self.items})
+
+
+class FakeAsyncClient:
+    calls: list[dict[str, Any]] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.calls.append(kwargs)
+
+    async def __aenter__(self) -> "FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"items": []})
 
 
 def fake_repo(repo_id: int, full_name: str = "openai/example") -> dict[str, Any]:
@@ -92,3 +112,76 @@ async def test_github_collector_max_results_and_date_query() -> None:
     params = client.calls[0]["params"]
     assert params["per_page"] == 2
     assert params["q"] == "rag pushed:2026-05-01..2026-05-18"
+
+
+@pytest.mark.anyio
+async def test_github_collector_passes_explicit_proxy_to_async_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr("backend.collectors.github_collector.httpx.AsyncClient", FakeAsyncClient)
+    collector = GitHubCollector(
+        config=CollectorConfig(
+            proxy=" http://127.0.0.1:7897 ",
+            http_proxy="http://127.0.0.1:7898",
+            https_proxy="http://127.0.0.1:7899",
+        )
+    )
+
+    items = await collector.collect(query="single-cell", max_results=1)
+
+    assert items == []
+    assert FakeAsyncClient.calls == [
+        {
+            "timeout": 20.0,
+            "proxy": "http://127.0.0.1:7897",
+            "trust_env": False,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_github_collector_uses_https_proxy_when_generic_proxy_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr("backend.collectors.github_collector.httpx.AsyncClient", FakeAsyncClient)
+    collector = GitHubCollector(
+        config=CollectorConfig(
+            http_proxy="http://127.0.0.1:7898",
+            https_proxy="http://127.0.0.1:7899",
+        )
+    )
+
+    await collector.collect(query="single-cell", max_results=1)
+
+    assert FakeAsyncClient.calls[0]["proxy"] == "http://127.0.0.1:7899"
+    assert FakeAsyncClient.calls[0]["trust_env"] is False
+
+
+@pytest.mark.anyio
+async def test_github_collector_preserves_default_async_client_behavior_without_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr("backend.collectors.github_collector.httpx.AsyncClient", FakeAsyncClient)
+    collector = GitHubCollector(config=CollectorConfig())
+
+    items = await collector.collect(query="single-cell", max_results=1)
+
+    assert items == []
+    assert FakeAsyncClient.calls == [{"timeout": 20.0}]
+
+
+def test_collector_proxy_env_vars_are_loaded_into_collector_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLLECTOR_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("COLLECTOR_HTTP_PROXY", "http://127.0.0.1:7898")
+    monkeypatch.setenv("COLLECTOR_HTTPS_PROXY", "http://127.0.0.1:7899")
+    get_settings.cache_clear()
+
+    try:
+        config = build_collector_config()
+    finally:
+        get_settings.cache_clear()
+
+    assert config.proxy == "http://127.0.0.1:7897"
+    assert config.http_proxy == "http://127.0.0.1:7898"
+    assert config.https_proxy == "http://127.0.0.1:7899"

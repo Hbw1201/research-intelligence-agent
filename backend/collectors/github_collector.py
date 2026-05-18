@@ -88,8 +88,21 @@ class GitHubCollector(BaseCollector):
         if self._client is not None:
             return await work(self._client)
 
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+        client_kwargs: dict[str, Any] = {"timeout": self.config.timeout_seconds}
+        proxy = self._configured_proxy()
+        if proxy:
+            client_kwargs["proxy"] = proxy
+            client_kwargs["trust_env"] = False
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             return await work(client)
+
+    def _configured_proxy(self) -> str | None:
+        for value in (self.config.proxy, self.config.https_proxy, self.config.http_proxy):
+            normalized = value.strip() if value else ""
+            if normalized:
+                return normalized
+        return None
 
     def _headers(self) -> dict[str, str]:
         headers = {

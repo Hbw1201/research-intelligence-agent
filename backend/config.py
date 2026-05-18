@@ -37,6 +37,9 @@ class Settings(BaseSettings):
 
     collector_max_retries: int = 3
     collector_rate_limit_per_minute: int = 30
+    collector_proxy: str | None = None
+    collector_http_proxy: str | None = None
+    collector_https_proxy: str | None = None
     github_token: SecretStr | None = None
     pubmed_email: str | None = None
 
