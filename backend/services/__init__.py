@@ -1,5 +1,12 @@
 """Service layer placeholders."""
 
+from backend.services.author_signal_service import (
+    AuthorMetricsProvider,
+    AuthorSignal,
+    AuthorSignalService,
+    MetadataAuthorMetricsProvider,
+    to_ranking_external_signals,
+)
 from backend.services.digest_service import ChineseDigestService, DigestItem
 from backend.services.feedback import FeedbackService
 from backend.services.llm_client import (
@@ -16,16 +23,30 @@ from backend.services.ranking_service import (
     RelevanceRanker,
     RelevanceRankingService,
 )
+from backend.services.media_signal_service import (
+    EmptyMediaMentionsProvider,
+    MediaMentionsProvider,
+    MediaSignal,
+    MediaSignalService,
+)
 from backend.services.wecom import PushMessage, WeComPushService
 
 __all__ = [
+    "AuthorMetricsProvider",
+    "AuthorSignal",
+    "AuthorSignalService",
     "ChineseDigestService",
     "DigestItem",
+    "EmptyMediaMentionsProvider",
     "ExternalLLMClient",
     "InvalidLLMResponseError",
     "LLMClientError",
     "FeedbackService",
     "LLMRequest",
+    "MediaMentionsProvider",
+    "MediaSignal",
+    "MediaSignalService",
+    "MetadataAuthorMetricsProvider",
     "MissingLLMConfigError",
     "PushMessage",
     "RankingConfig",
@@ -33,5 +54,6 @@ __all__ = [
     "RankedItem",
     "RelevanceRanker",
     "RelevanceRankingService",
+    "to_ranking_external_signals",
     "WeComPushService",
 ]
