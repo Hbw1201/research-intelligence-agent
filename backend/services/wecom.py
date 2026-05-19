@@ -150,7 +150,9 @@ class WeComPushService:
         if self._http_client is not None:
             return await self._http_client.post(webhook_url, json=payload, timeout=timeout)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        client_kwargs: dict[str, Any] = {"timeout": timeout}
+        client_kwargs.update(self._proxy_client_kwargs())
+        async with httpx.AsyncClient(**client_kwargs) as client:
             return await client.post(webhook_url, json=payload)
 
     def _webhook_url(self) -> str:
@@ -328,6 +330,21 @@ class WeComPushService:
 
     def _markdown_max_bytes(self) -> int:
         return max(MIN_MARKDOWN_MAX_BYTES, self.settings.wecom_markdown_max_bytes)
+
+    def _proxy_client_kwargs(self) -> dict[str, object]:
+        proxy = self._clean_proxy(self.settings.wecom_proxy)
+        if not proxy:
+            proxy = self._clean_proxy(self.settings.wecom_https_proxy) or self._clean_proxy(
+                self.settings.wecom_http_proxy
+            )
+        if not proxy:
+            return {}
+        return {"proxy": proxy, "trust_env": False}
+
+    @staticmethod
+    def _clean_proxy(value: str | None) -> str | None:
+        normalized = value.strip() if value else ""
+        return normalized or None
 
     @staticmethod
     def _byte_len(value: str) -> int:

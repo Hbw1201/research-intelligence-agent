@@ -5,8 +5,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.collectors.base import ResearchItem
+from backend.collectors.errors import concise_error_message, should_retry_collector_error
 from backend.services.digest_service import DigestItem
 from backend.services.ranking_service import RankedItem, RelevanceRankingService
 
@@ -161,7 +163,7 @@ class DailyIntelligencePipeline:
         options: DailyPipelineOptions,
     ) -> CollectorRunResult:
         collected_items: list[ResearchItem] = []
-        failed_collectors: dict[str, str] = {}
+        failed_collectors: dict[str, tuple[str, bool]] = {}
         for source in sources:
             collector = self.collectors.get(source)
             if collector is None:
@@ -169,7 +171,7 @@ class DailyIntelligencePipeline:
             try:
                 collected_items.extend(await collector.collect(query=query, max_results=max_items))
             except Exception as exc:  # noqa: BLE001 - isolate collector failures for retry.
-                failed_collectors[source] = self._error_message(exc)
+                failed_collectors[source] = (self._error_message(exc), should_retry_collector_error(exc))
 
         final_errors = await self._retry_failed_collectors(
             failed_collectors,
@@ -182,16 +184,19 @@ class DailyIntelligencePipeline:
 
     async def _retry_failed_collectors(
         self,
-        failed_collectors: dict[str, str],
+        failed_collectors: dict[str, tuple[str, bool]],
         query: str,
         max_items: int,
         options: DailyPipelineOptions,
         collected_items: list[ResearchItem],
     ) -> dict[str, str]:
         final_errors: dict[str, str] = {}
-        for source in failed_collectors:
+        for source, (initial_error, retryable) in failed_collectors.items():
             collector = self.collectors[source]
-            last_error = failed_collectors[source]
+            last_error = initial_error
+            if not retryable:
+                final_errors[source] = last_error
+                continue
             succeeded = False
             for attempt in range(1, options.max_failed_source_retries + 1):
                 await self._sleep_before_retry(attempt, options.failed_source_retry_delay_seconds)
@@ -201,6 +206,8 @@ class DailyIntelligencePipeline:
                     break
                 except Exception as exc:  # noqa: BLE001 - retry collector failures independently.
                     last_error = self._error_message(exc)
+                    if not should_retry_collector_error(exc):
+                        break
             if not succeeded:
                 final_errors[source] = last_error
         return final_errors
@@ -285,7 +292,40 @@ class DailyIntelligencePipeline:
     def _normalize_url(url: str | None) -> str:
         if not url:
             return ""
-        return url.strip().rstrip("/").lower()
+        parsed = urlsplit(url.strip())
+        if not parsed.scheme and not parsed.netloc:
+            return url.strip().rstrip("/").lower()
+
+        tracking_params = {
+            "fbclid",
+            "gclid",
+            "mc_cid",
+            "mc_eid",
+            "ref",
+            "spm",
+            "utm_id",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+        }
+        query_params = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_") and key.lower() not in tracking_params
+        ]
+        normalized_path = parsed.path.rstrip("/") or ""
+        normalized = urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                normalized_path,
+                urlencode(query_params, doseq=True),
+                "",
+            )
+        )
+        return normalized.rstrip("/").lower()
 
     @staticmethod
     def _normalize_external_id(external_id: str | None) -> str:
@@ -302,10 +342,7 @@ class DailyIntelligencePipeline:
 
     @staticmethod
     def _error_message(exc: Exception) -> str:
-        message = str(exc).strip()
-        if not message:
-            return exc.__class__.__name__
-        return f"{exc.__class__.__name__}: {message}"
+        return concise_error_message(exc)
 
 
 __all__ = [

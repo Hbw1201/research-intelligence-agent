@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
+from backend.collectors.errors import log_collector_attempt_failure, should_retry_collector_error
 from backend.collectors.proxy import collector_proxy_config
 
 
@@ -63,13 +64,16 @@ class ArxivCollector(BaseCollector):
                 return self._parse_atom_feed(xml_text)[:max_results]
             except Exception as exc:  # noqa: BLE001 - retries intentionally catch client/network errors.
                 last_error = exc
-                logger.warning(
+                log_collector_attempt_failure(
+                    logger,
                     "arXiv collection attempt failed",
+                    exc,
                     extra={"query": normalized_query, "attempt": attempt, "max_attempts": attempts},
-                    exc_info=True,
                 )
-                if attempt < attempts:
+                if attempt < attempts and should_retry_collector_error(exc):
                     await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                    continue
+                break
 
         raise RuntimeError("arXiv collection failed") from last_error
 

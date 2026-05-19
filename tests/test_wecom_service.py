@@ -34,6 +34,9 @@ def make_settings(
     webhook_url: str | None = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-secret",
     markdown_max_bytes: int = 1000,
     max_retries: int = 1,
+    proxy: str | None = None,
+    http_proxy: str | None = None,
+    https_proxy: str | None = None,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -41,6 +44,9 @@ def make_settings(
         wecom_timeout_seconds=5,
         wecom_max_retries=max_retries,
         wecom_markdown_max_bytes=markdown_max_bytes,
+        wecom_proxy=proxy,
+        wecom_http_proxy=http_proxy,
+        wecom_https_proxy=https_proxy,
     )
 
 
@@ -126,3 +132,69 @@ async def test_missing_wecom_webhook_url_gives_clear_error_without_http_call() -
         await service.send_markdown(PushMessage(title="今日科研情报", markdown="短报告"))
 
     assert fake_http.calls == []
+
+
+@pytest.mark.anyio
+async def test_wecom_proxy_is_passed_to_httpx_async_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+            return wecom_response({"errcode": 0, "errmsg": "ok"}, url)
+
+    monkeypatch.setattr("backend.services.wecom.httpx.AsyncClient", FakeAsyncClient)
+    service = WeComPushService(
+        settings=make_settings(
+            proxy=" http://127.0.0.1:7897 ",
+            http_proxy="http://127.0.0.1:7898",
+            https_proxy="http://127.0.0.1:7899",
+        )
+    )
+
+    await service.send_markdown(PushMessage(title="Daily digest", markdown="short report"))
+
+    assert calls == [
+        {
+            "timeout": 5.0,
+            "proxy": "http://127.0.0.1:7897",
+            "trust_env": False,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_wecom_preserves_default_async_client_behavior_without_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+            return wecom_response({"errcode": 0, "errmsg": "ok"}, url)
+
+    monkeypatch.setattr("backend.services.wecom.httpx.AsyncClient", FakeAsyncClient)
+    service = WeComPushService(settings=make_settings())
+
+    await service.send_markdown(PushMessage(title="Daily digest", markdown="short report"))
+
+    assert calls == [{"timeout": 5.0}]

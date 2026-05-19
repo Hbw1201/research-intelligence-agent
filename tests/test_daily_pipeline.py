@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from backend.collectors.base import ResearchItem
@@ -281,7 +282,7 @@ async def test_pipeline_continues_when_one_collector_fails_but_another_succeeds(
     result = await pipeline.run(keywords=["graph"], max_items=5, sources=["pubmed", "arxiv"])
 
     assert len(result.digests) == 1
-    assert result.collector_errors == {"pubmed": "TimeoutError: source timed out"}
+    assert result.collector_errors == {"pubmed": "timeout"}
     assert "Working paper" in result.report
     assert "Collector warnings" in result.report
 
@@ -318,9 +319,9 @@ async def test_failed_collector_still_fails_after_five_retries_and_records_error
     result = await pipeline.run(keywords=["graph"], max_items=5, sources=["arxiv", "pubmed"])
 
     assert len(failing.calls) == 6
-    assert result.collector_errors == {"pubmed": "TimeoutError: still slow"}
+    assert result.collector_errors == {"pubmed": "timeout"}
     assert "## Collector warnings" in result.report
-    assert "- pubmed: TimeoutError: still slow" in result.report
+    assert "- pubmed: timeout" in result.report
 
 
 @pytest.mark.anyio
@@ -353,3 +354,94 @@ async def test_collector_warnings_appear_in_markdown_report() -> None:
 
     assert "## Collector warnings" in result.report
     assert "- github: RuntimeError: rate limited" in result.report
+
+
+@pytest.mark.anyio
+async def test_pubmed_timeout_and_github_success_still_produces_report() -> None:
+    github = FakeCollector(
+        "github",
+        [make_item("GitHub repo", "https://github.com/example/repo", "repo", source_name="github")],
+    )
+    pubmed = FlakyCollector("pubmed", [httpx.ConnectTimeout("connect timed out")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"pubmed": pubmed, "github": github},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=0,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["single-cell"], max_items=5, sources=["pubmed", "github"])
+
+    assert len(result.digests) == 1
+    assert "GitHub repo" in result.report
+    assert result.collector_errors == {"pubmed": "ConnectTimeout: connect timed out"}
+    assert "Traceback" not in result.report
+
+
+@pytest.mark.anyio
+async def test_arxiv_429_and_github_success_still_produces_report() -> None:
+    github = FakeCollector(
+        "github",
+        [make_item("GitHub repo", "https://github.com/example/repo", "repo", source_name="github")],
+    )
+    response = httpx.Response(
+        status_code=429,
+        request=httpx.Request("GET", "https://export.arxiv.org/api/query"),
+    )
+    arxiv = FlakyCollector("arxiv", [httpx.HTTPStatusError("too many requests", request=response.request, response=response)])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": arxiv, "github": github},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=5,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["single-cell"], max_items=5, sources=["arxiv", "github"])
+
+    assert len(arxiv.calls) == 1
+    assert len(result.digests) == 1
+    assert "GitHub repo" in result.report
+    assert result.collector_errors == {"arxiv": "HTTP 429"}
+    assert "- arxiv: HTTP 429" in result.report
+
+
+@pytest.mark.anyio
+async def test_collector_warnings_are_concise_without_traceback() -> None:
+    response = httpx.Response(
+        status_code=429,
+        request=httpx.Request("GET", "https://example.com"),
+    )
+    failing = FlakyCollector("arxiv", [httpx.HTTPStatusError("raw verbose provider message", request=response.request, response=response)])
+    working = FakeCollector("github", [make_item("Working repo", "https://github.com/example/repo", "repo")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"arxiv": failing, "github": working},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=1,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=5, sources=["arxiv", "github"])
+
+    assert result.collector_errors == {"arxiv": "HTTP 429"}
+    assert "Traceback" not in result.report
+    assert "raw verbose provider message" not in result.report
+
+
+def test_pipeline_deduplicates_web_urls_after_removing_tracking_params() -> None:
+    first = make_item(
+        "First web result",
+        "https://example.com/page?utm_source=newsletter&x=1&fbclid=abc",
+        None,
+        source_name="web",
+    )
+    duplicate = make_item(
+        "Duplicate web result",
+        "https://example.com/page/?x=1&utm_medium=social",
+        None,
+        source_name="web",
+    )
+
+    unique_items = DailyIntelligencePipeline.deduplicate_items([first, duplicate])
+
+    assert len(unique_items) == 1
+    assert unique_items[0].title == "First web result"

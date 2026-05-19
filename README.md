@@ -94,6 +94,20 @@ To push the generated digest to a configured WeCom group robot, set `WECOM_WEBHO
 python scripts/run_daily_digest.py --keywords "multi-agent systems,RAG" --sources github --max-items 5 --push-wecom --wecom-title "今日科研情报"
 ```
 
+If your network requires an explicit proxy for WeCom delivery, configure one of:
+
+```bash
+WECOM_PROXY=http://127.0.0.1:7897
+WECOM_HTTP_PROXY=http://127.0.0.1:7897
+WECOM_HTTPS_PROXY=http://127.0.0.1:7897
+```
+
+`WECOM_PROXY` takes precedence and disables environment proxy inheritance for WeCom HTTP calls. Web discovery page body fetching is disabled by default for stable MVP runs:
+
+```bash
+WEB_DISCOVERY_FETCH_PAGES=false
+```
+
 To push an existing saved report:
 
 ```bash

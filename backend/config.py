@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     wecom_timeout_seconds: float = 10.0
     wecom_max_retries: int = 3
     wecom_markdown_max_bytes: int = 3500
+    wecom_proxy: str | None = None
+    wecom_http_proxy: str | None = None
+    wecom_https_proxy: str | None = None
 
     collector_max_retries: int = 3
     collector_rate_limit_per_minute: int = 30

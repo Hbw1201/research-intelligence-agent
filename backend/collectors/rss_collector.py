@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
+from backend.collectors.errors import log_collector_attempt_failure, should_retry_collector_error
 from backend.collectors.proxy import collector_proxy_config
 
 
@@ -61,13 +62,16 @@ class RSSCollector(BaseCollector):
                 )
             except Exception as exc:  # noqa: BLE001 - retry network and parse failures.
                 last_error = exc
-                logger.warning(
+                log_collector_attempt_failure(
+                    logger,
                     "RSS collection attempt failed",
+                    exc,
                     extra={"feed_url": self.feed_url, "attempt": attempt, "max_attempts": attempts},
-                    exc_info=True,
                 )
-                if attempt < attempts:
+                if attempt < attempts and should_retry_collector_error(exc):
                     await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                    continue
+                break
 
         raise RuntimeError("RSS collection failed") from last_error
 
