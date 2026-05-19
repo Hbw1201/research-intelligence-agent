@@ -12,8 +12,18 @@ EXPECTED_HTTP_STATUS_CODES = {401, 403, 404, 408, 429, 500, 502, 503, 504}
 NO_RETRY_HTTP_STATUS_CODES = {401, 403, 404, 429}
 
 
+class ConciseCollectorError(RuntimeError):
+    """Collector error whose message is already safe for report output."""
+
+    def __init__(self, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 def is_expected_transient_error(exc: Exception) -> bool:
     """Return whether a collector failure is common and should be concise by default."""
+    if isinstance(exc, ConciseCollectorError):
+        return True
     if isinstance(exc, (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ReadError, asyncio.TimeoutError, TimeoutError)):
         return True
     status_code = http_status_code(exc)
@@ -22,6 +32,8 @@ def is_expected_transient_error(exc: Exception) -> bool:
 
 def should_retry_collector_error(exc: Exception) -> bool:
     """Return whether retrying this collector error in the same run is useful."""
+    if isinstance(exc, ConciseCollectorError):
+        return exc.retryable
     status_code = http_status_code(exc)
     if status_code in NO_RETRY_HTTP_STATUS_CODES:
         return False
@@ -45,6 +57,9 @@ def http_status_code(exc: Exception) -> int | None:
 
 def concise_error_message(exc: Exception) -> str:
     """Build a short error message suitable for reports and warnings."""
+    if isinstance(exc, ConciseCollectorError):
+        return str(exc).strip() or exc.__class__.__name__
+
     status_code = http_status_code(exc)
     if status_code is not None:
         return f"HTTP {status_code}"

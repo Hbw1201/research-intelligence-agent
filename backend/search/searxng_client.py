@@ -10,9 +10,14 @@ from backend.collectors.base import CollectorConfig
 from backend.collectors.proxy import collector_proxy_config
 from backend.config import Settings, get_settings
 from backend.search.search_result import SearchResult
+from backend.search.searxng_errors import BLOCKED_ENGINES_ZERO_RESULTS_MESSAGE, SearxNGBlockedEnginesError
 
 
 logger = logging.getLogger(__name__)
+
+
+SAFE_SEARXNG_CATEGORIES = {"general"}
+DEFAULT_SEARXNG_CATEGORY = "general"
 
 
 class SearxNGClient:
@@ -38,7 +43,7 @@ class SearxNGClient:
             "q": normalized_query,
             "format": "json",
             "language": "auto",
-            "categories": "general",
+            "categories": self._safe_category(getattr(self.settings, "web_search_category", DEFAULT_SEARXNG_CATEGORY)),
         }
         response = await self._get(params)
         response.raise_for_status()
@@ -49,6 +54,8 @@ class SearxNGClient:
         raw_results = data.get("results", [])
         if not isinstance(raw_results, list):
             return []
+        if not raw_results and data.get("unresponsive_engines"):
+            raise SearxNGBlockedEnginesError(BLOCKED_ENGINES_ZERO_RESULTS_MESSAGE)
 
         results: list[SearchResult] = []
         for raw_result in raw_results[:max_results]:
@@ -120,3 +127,10 @@ class SearxNGClient:
         if value is None:
             return ""
         return " ".join(str(value).split())
+
+    @staticmethod
+    def _safe_category(category: Any) -> str:
+        normalized = str(category or "").strip().lower()
+        if normalized in SAFE_SEARXNG_CATEGORIES:
+            return normalized
+        return DEFAULT_SEARXNG_CATEGORY

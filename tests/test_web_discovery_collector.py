@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
+from backend.collectors.errors import ConciseCollectorError
 from backend.collectors.page_fetcher import FetchedPage, PageFetchResult
 from backend.collectors.web_collector import WebDiscoveryCollector
 from backend.config import Settings
 from backend.search.search_result import SearchResult
+from backend.search.searxng_errors import SearxNGBlockedEnginesError
 
 
 class FakeSearchClient:
@@ -30,6 +33,46 @@ class FakePageFetcher:
     async def fetch(self, url: str) -> PageFetchResult:
         self.calls.append(url)
         return self.results.get(url, PageFetchResult(status="not_found"))
+
+
+class RaisingPageFetcher:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def fetch(self, url: str) -> PageFetchResult:
+        self.calls.append(url)
+        raise AssertionError(f"PageFetcher should not be called for {url}")
+
+
+class PartiallyFailingSearchClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def search(self, query: str, max_results: int) -> list[SearchResult]:
+        self.calls.append({"query": query, "max_results": max_results})
+        if query.endswith("dataset"):
+            request = httpx.Request("GET", "http://localhost:8080/search")
+            response = httpx.Response(status_code=400, request=request)
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+        return [search_result(f"https://example.com/{query.replace(' ', '-')}", title=query)]
+
+
+class PartiallyBlockedSearchClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def search(self, query: str, max_results: int) -> list[SearchResult]:
+        self.calls.append({"query": query, "max_results": max_results})
+        if query.endswith("dataset"):
+            raise SearxNGBlockedEnginesError("SearxNG returned zero results; engines blocked/rate-limited")
+        return [search_result(f"https://example.com/{query.replace(' ', '-')}", title=query)]
+
+
+class AlwaysFailingSearchClient:
+    async def search(self, query: str, max_results: int) -> list[SearchResult]:
+        request = httpx.Request("GET", "http://localhost:8080/search")
+        response = httpx.Response(status_code=400, request=request)
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
 
 
 def make_settings(
@@ -160,11 +203,30 @@ async def test_web_discovery_collector_fetch_pages_false_avoids_page_fetcher() -
     assert fetcher.calls == []
     assert items[0].abstract == "Search snippet"
     assert items[0].raw_text == "Search snippet"
-    assert items[0].metadata["page_fetch_status"] == "not_fetched"
+    assert items[0].metadata["page_fetch_status"] == "disabled"
 
 
 @pytest.mark.anyio
-async def test_web_discovery_collector_returns_item_when_page_fetch_is_403() -> None:
+async def test_web_discovery_collector_fetch_pages_false_never_calls_page_fetcher() -> None:
+    collector = WebDiscoveryCollector(
+        search_client=FakeSearchClient([search_result("https://www.biorxiv.org/content/10.1101/test")]),
+        settings=make_settings(fetch_pages=False),
+        page_fetcher=RaisingPageFetcher(),  # type: ignore[arg-type]
+    )
+
+    items = await collector.collect(query="single-cell", max_results=10)
+
+    assert len(items) == 1
+    assert items[0].title == "Search title"
+    assert items[0].abstract == "Search snippet"
+    assert items[0].raw_text == "Search snippet"
+    assert items[0].metadata["page_fetch_status"] == "disabled"
+
+
+@pytest.mark.anyio
+async def test_web_discovery_collector_returns_item_when_page_fetch_is_403(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     fetcher = FakePageFetcher(
         {
             "https://example.com/update": PageFetchResult(
@@ -190,6 +252,7 @@ async def test_web_discovery_collector_returns_item_when_page_fetch_is_403() -> 
     assert item.metadata["page_fetch_status"] == "skipped_403"
     assert item.metadata["search_source"] == "searxng"
     assert item.metadata["snippet"] == "Search snippet"
+    assert "Traceback" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -308,3 +371,57 @@ async def test_web_discovery_collector_respects_total_max_results() -> None:
         "https://example.com/c",
     ]
     assert [call["max_results"] for call in fake_search.calls] == [2, 2]
+
+
+@pytest.mark.anyio
+async def test_one_failed_expanded_query_does_not_fail_web_discovery() -> None:
+    fake_search = PartiallyFailingSearchClient()
+    collector = WebDiscoveryCollector(
+        search_client=fake_search,
+        settings=make_settings(query_expansion=True, query_categories="general,dataset,benchmark", results_per_query=2),
+        page_fetcher=FakePageFetcher(),  # type: ignore[arg-type]
+    )
+
+    items = await collector.collect(query="single-cell", max_results=10)
+
+    assert [call["query"] for call in fake_search.calls] == [
+        "single-cell",
+        "single-cell dataset",
+        "single-cell benchmark",
+    ]
+    assert [item.metadata["search_category"] for item in items] == ["general", "benchmark"]
+    assert [item.title for item in items] == ["single-cell", "single-cell benchmark"]
+
+
+@pytest.mark.anyio
+async def test_one_blocked_expanded_query_does_not_fail_web_discovery() -> None:
+    fake_search = PartiallyBlockedSearchClient()
+    collector = WebDiscoveryCollector(
+        search_client=fake_search,
+        settings=make_settings(query_expansion=True, query_categories="general,dataset,benchmark", results_per_query=2),
+        page_fetcher=FakePageFetcher(),  # type: ignore[arg-type]
+    )
+
+    items = await collector.collect(query="single-cell", max_results=10)
+
+    assert [call["query"] for call in fake_search.calls] == [
+        "single-cell",
+        "single-cell dataset",
+        "single-cell benchmark",
+    ]
+    assert [item.metadata["search_category"] for item in items] == ["general", "benchmark"]
+    assert [item.title for item in items] == ["single-cell", "single-cell benchmark"]
+
+
+@pytest.mark.anyio
+async def test_all_failed_expanded_queries_raise_concise_http_400_error() -> None:
+    collector = WebDiscoveryCollector(
+        search_client=AlwaysFailingSearchClient(),
+        settings=make_settings(query_expansion=True, query_categories="general,dataset", results_per_query=2),
+        page_fetcher=FakePageFetcher(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ConciseCollectorError, match="SearxNG query failed with HTTP 400 for one expanded query") as exc:
+        await collector.collect(query="single-cell", max_results=10)
+
+    assert str(exc.value) == "SearxNG query failed with HTTP 400 for one expanded query"

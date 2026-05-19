@@ -8,6 +8,23 @@ This directory provides a small self-hosted SearxNG option for the MVP web disco
 docker compose -f infra/searxng/docker-compose.yml up -d
 ```
 
+## Windows Docker Proxy
+
+If SearxNG engines are blocked or rate-limited from inside Docker on Windows, point the container at your host proxy before starting it:
+
+```bash
+SEARXNG_HTTP_PROXY=http://host.docker.internal:7897
+SEARXNG_HTTPS_PROXY=http://host.docker.internal:7897
+```
+
+PowerShell example:
+
+```powershell
+$env:SEARXNG_HTTP_PROXY = "http://host.docker.internal:7897"
+$env:SEARXNG_HTTPS_PROXY = "http://host.docker.internal:7897"
+docker compose -f infra/searxng/docker-compose.yml up -d
+```
+
 ## Test
 
 Open this URL from the host machine:

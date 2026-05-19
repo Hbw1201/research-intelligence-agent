@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from backend.collectors.base import ResearchItem
+from backend.collectors.errors import ConciseCollectorError
 from backend.services.daily_pipeline import DailyIntelligencePipeline
 from backend.services.digest_service import DigestItem
 from backend.services.seen_item_store import SeenItemStore
@@ -430,6 +431,48 @@ async def test_collector_warnings_are_concise_without_traceback() -> None:
     assert result.collector_errors == {"arxiv": "HTTP 429"}
     assert "Traceback" not in result.report
     assert "raw verbose provider message" not in result.report
+
+
+@pytest.mark.anyio
+async def test_web_http_400_warning_is_concise_without_traceback() -> None:
+    failing = FlakyCollector(
+        "web",
+        [ConciseCollectorError("SearxNG query failed with HTTP 400 for one expanded query")],
+    )
+    working = FakeCollector("github", [make_item("Working repo", "https://github.com/example/repo", "repo")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"web": failing, "github": working},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=1,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["single-cell"], max_items=5, sources=["web", "github"])
+
+    assert result.collector_errors == {"web": "SearxNG query failed with HTTP 400 for one expanded query"}
+    assert "- web: SearxNG query failed with HTTP 400 for one expanded query" in result.report
+    assert "Traceback" not in result.report
+
+
+@pytest.mark.anyio
+async def test_web_blocked_engines_warning_is_concise_without_traceback() -> None:
+    failing = FlakyCollector(
+        "web",
+        [ConciseCollectorError("SearxNG returned zero results; engines blocked/rate-limited")],
+    )
+    working = FakeCollector("github", [make_item("Working repo", "https://github.com/example/repo", "repo")])
+    pipeline = DailyIntelligencePipeline(
+        collectors={"web": failing, "github": working},
+        digest_service=FakeDigestService(),
+        max_failed_source_retries=1,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["single-cell"], max_items=5, sources=["web", "github"])
+
+    assert result.collector_errors == {"web": "SearxNG returned zero results; engines blocked/rate-limited"}
+    assert "- web: SearxNG returned zero results; engines blocked/rate-limited" in result.report
+    assert "Traceback" not in result.report
 
 
 def test_pipeline_deduplicates_web_urls_after_removing_tracking_params() -> None:

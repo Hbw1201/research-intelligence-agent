@@ -8,3 +8,6 @@ No new items after deduplication.
 - Collected items: 0
 - Duplicates skipped: 0
 - New items included: 0
+
+## Collector warnings
+- web: HTTP 400

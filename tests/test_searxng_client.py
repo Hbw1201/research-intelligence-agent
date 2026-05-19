@@ -7,6 +7,7 @@ import pytest
 
 from backend.config import Settings
 from backend.search.searxng_client import SearxNGClient
+from backend.search.searxng_errors import SearxNGBlockedEnginesError
 
 
 class FakeSearchHTTPClient:
@@ -31,6 +32,12 @@ def make_settings() -> Settings:
     )
 
 
+class SearchCategorySettings:
+    web_search_provider = "searxng"
+    web_search_base_url = "http://localhost:8080"
+    web_search_category = "dataset"
+
+
 @pytest.mark.anyio
 async def test_searxng_client_sends_json_search_params() -> None:
     fake_http = FakeSearchHTTPClient({"results": []})
@@ -46,6 +53,33 @@ async def test_searxng_client_sends_json_search_params() -> None:
         "language": "auto",
         "categories": "general",
     }
+
+
+@pytest.mark.anyio
+async def test_searxng_client_falls_back_to_general_for_unsupported_category() -> None:
+    fake_http = FakeSearchHTTPClient({"results": []})
+    client = SearxNGClient(settings=SearchCategorySettings(), http_client=fake_http)  # type: ignore[arg-type]
+
+    await client.search("single-cell dataset", max_results=5)
+
+    assert fake_http.calls[0]["params"]["categories"] == "general"
+
+
+@pytest.mark.anyio
+async def test_searxng_client_reports_blocked_engines_when_zero_results() -> None:
+    fake_http = FakeSearchHTTPClient(
+        {
+            "results": [],
+            "unresponsive_engines": [
+                ["brave", "too many requests"],
+                ["google", "CAPTCHA"],
+            ],
+        }
+    )
+    client = SearxNGClient(settings=make_settings(), http_client=fake_http)
+
+    with pytest.raises(SearxNGBlockedEnginesError, match="engines blocked/rate-limited"):
+        await client.search("single-cell foundation model", max_results=5)
 
 
 @pytest.mark.anyio

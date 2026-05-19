@@ -77,10 +77,22 @@ class PageFetcher:
                     extra={"url": url, "status_code": status_code, "page_fetch_status": reason},
                 )
                 return PageFetchResult(status=reason, reason=reason, status_code=status_code)
-            logger.warning("Page fetch failed", extra={"url": url, "status_code": status_code}, exc_info=True)
+            logger.warning(
+                "Page fetch failed: HTTP %s url=%s",
+                status_code,
+                url,
+                extra={"url": url, "status_code": status_code},
+            )
+            logger.debug("Page fetch traceback", extra={"url": url, "status_code": status_code}, exc_info=True)
             return PageFetchResult(status="failed_http", reason="failed_http", status_code=status_code)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            logger.warning("Page fetch failed", extra={"url": url}, exc_info=True)
+            logger.warning(
+                "Page fetch failed: %s url=%s",
+                exc.__class__.__name__,
+                url,
+                extra={"url": url},
+            )
+            logger.debug("Page fetch traceback", extra={"url": url}, exc_info=True)
             return PageFetchResult(status="failed", reason=exc.__class__.__name__)
 
         content_type = self._content_type(response)

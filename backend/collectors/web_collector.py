@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import date
+import logging
 from urllib.parse import urlparse, urlunparse
+
+import httpx
 
 from backend.collectors.base import BaseCollector, CollectorConfig, ResearchItem
 from backend.collectors.content_extractor import ContentExtractor
+from backend.collectors.errors import ConciseCollectorError, concise_error_message
 from backend.collectors.page_fetcher import PageFetchResult, PageFetcher
 from backend.collectors.rss_discovery import discover_feed_urls
 from backend.config import Settings, get_settings
@@ -12,7 +16,11 @@ from backend.services.item_fingerprint import normalize_canonical_url, normalize
 from backend.search.web_query_planner import PlannedWebQuery, WebQueryPlanner
 from backend.search.web_result_classifier import WebResultClassifier
 from backend.search.search_result import SearchResult
+from backend.search.searxng_errors import SearxNGBlockedEnginesError
 from backend.search.web_search_client import WebSearchClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class WebDiscoveryCollector(BaseCollector):
@@ -33,7 +41,7 @@ class WebDiscoveryCollector(BaseCollector):
         super().__init__(config or CollectorConfig())
         self.search_client = search_client
         self.settings = settings or get_settings()
-        self.page_fetcher = page_fetcher or PageFetcher(settings=self.settings, config=self.config)
+        self.page_fetcher = page_fetcher
         self.content_extractor = content_extractor or ContentExtractor()
         self.query_planner = query_planner or WebQueryPlanner(categories=self._query_categories())
         self.result_classifier = result_classifier or WebResultClassifier()
@@ -109,11 +117,23 @@ class WebDiscoveryCollector(BaseCollector):
         merged: list[SearchResult] = []
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
+        failed_query_errors: list[str] = []
         per_query_limit = self._per_query_limit(limit)
         for planned in planned_queries:
             if len(merged) >= limit:
                 break
-            results = await self.search_client.search(query=planned.query, max_results=per_query_limit)
+            try:
+                results = await self.search_client.search(query=planned.query, max_results=per_query_limit)
+            except Exception as exc:  # noqa: BLE001 - isolate one expanded search query.
+                message = self._expanded_query_error_message(exc)
+                failed_query_errors.append(message)
+                logger.warning(
+                    "%s",
+                    message,
+                    extra={"query": planned.query, "search_category": planned.category},
+                )
+                logger.debug("Expanded web discovery query failed", exc_info=True)
+                continue
             for result in results:
                 url_key = normalize_canonical_url(result.url)
                 title_key = normalize_title(result.title)
@@ -126,6 +146,8 @@ class WebDiscoveryCollector(BaseCollector):
                 merged.append(self._with_search_metadata(result, planned))
                 if len(merged) >= limit:
                     break
+        if not merged and failed_query_errors:
+            raise ConciseCollectorError(failed_query_errors[0], retryable=False)
         return merged
 
     def _planned_queries(self, query: str) -> list[PlannedWebQuery]:
@@ -158,10 +180,23 @@ class WebDiscoveryCollector(BaseCollector):
         metadata["searxng_engine"] = result.source
         return result.model_copy(update={"metadata": metadata})
 
+    @staticmethod
+    def _expanded_query_error_message(exc: Exception) -> str:
+        if isinstance(exc, SearxNGBlockedEnginesError):
+            return str(exc)
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
+            return "SearxNG query failed with HTTP 400 for one expanded query"
+        return f"SearxNG query failed for one expanded query: {concise_error_message(exc)}"
+
     async def _fetch_page_if_enabled(self, url: str) -> PageFetchResult | None:
         if not self.settings.web_discovery_fetch_pages:
-            return None
-        return await self.page_fetcher.fetch(url)
+            return PageFetchResult(status="disabled", reason="disabled")
+        return await self._page_fetcher().fetch(url)
+
+    def _page_fetcher(self) -> PageFetcher:
+        if self.page_fetcher is None:
+            self.page_fetcher = PageFetcher(settings=self.settings, config=self.config)
+        return self.page_fetcher
 
     def _domain_allowed(self, url: str) -> bool:
         domain = self._domain(url)
