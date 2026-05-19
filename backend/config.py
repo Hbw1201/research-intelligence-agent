@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     github_token: SecretStr | None = None
     pubmed_email: str | None = None
 
+    web_search_provider: str = "searxng"
+    web_search_base_url: str = "http://localhost:8080"
+    web_search_api_key: SecretStr | None = None
+    web_discovery_max_results: int = 20
+    web_discovery_allowed_domains: str | None = None
+    web_discovery_blocked_domains: str | None = None
+    web_discovery_fetch_pages: bool = False
+    web_page_timeout_seconds: float = 30.0
+    web_page_max_bytes: int = 2_000_000
+
 
 @lru_cache
 def get_settings() -> Settings:

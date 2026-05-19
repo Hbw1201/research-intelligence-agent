@@ -5,6 +5,7 @@ from backend.collectors.base import BaseCollector, CollectedItem, CollectorConfi
 from backend.collectors.github_collector import GitHubCollector
 from backend.collectors.pubmed_collector import PubMedCollector
 from backend.collectors.rss_collector import RSSCollector
+from backend.collectors.web_collector import WebDiscoveryCollector
 
 __all__ = [
     "ArxivCollector",
@@ -15,4 +16,5 @@ __all__ = [
     "PubMedCollector",
     "ResearchItem",
     "RSSCollector",
+    "WebDiscoveryCollector",
 ]

@@ -15,7 +15,9 @@ from backend.collectors.base import CollectorConfig
 from backend.collectors.github_collector import GitHubCollector
 from backend.collectors.pubmed_collector import PubMedCollector
 from backend.collectors.rss_collector import RSSCollector
+from backend.collectors.web_collector import WebDiscoveryCollector
 from backend.config import get_settings
+from backend.search.searxng_client import SearxNGClient
 from backend.services.daily_pipeline import CollectorProtocol, DailyIntelligencePipeline
 from backend.services.digest_service import ChineseDigestService
 from backend.services.llm_client import ExternalLLMClient
@@ -84,6 +86,14 @@ def build_collectors(sources: list[str], rss_feed_urls: list[str]) -> dict[str, 
         if not rss_feed_urls:
             raise ValueError("--rss-feed-url is required when --sources includes rss.")
         collectors["rss"] = RSSCollector(feed_url=rss_feed_urls[0], config=config)
+    if "web" in sources:
+        if settings.web_search_provider.strip().lower() != "searxng":
+            raise ValueError("Only WEB_SEARCH_PROVIDER=searxng is supported for MVP web discovery.")
+        collectors["web"] = WebDiscoveryCollector(
+            search_client=SearxNGClient(settings=settings, config=config),
+            settings=settings,
+            config=config,
+        )
     return collectors
 
 
