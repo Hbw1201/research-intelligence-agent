@@ -67,6 +67,17 @@ class Settings(BaseSettings):
 
     seen_item_store_path: str = "data/seen_items.jsonl"
     filter_seen_items: bool = True
+    source_registry_path: str = "data/source_registry.json"
+    source_registry_enabled: bool = True
+    source_registry_auto_update: bool = False
+    report_site_dir: str = "reports/site"
+    report_public_base_url: str = ""
+    report_push_link_only: bool = False
+    report_link_threshold_items: int = 8
+    topic_registry_path: str = "data/topic_registry.json"
+    hotspot_discovery_enabled: bool = True
+    hotspot_max_topics: int = 50
+    hotspot_min_score: float = 0.2
 
 
 @lru_cache

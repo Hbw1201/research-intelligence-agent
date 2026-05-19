@@ -18,6 +18,7 @@ from backend.services.daily_pipeline import (
 )
 from backend.services.digest_service import ChineseDigestService, DigestItem
 from backend.services.feedback import FeedbackService
+from backend.services.html_report_renderer import HtmlReportMetadata, HtmlReportRenderer
 from backend.services.llm_client import (
     ExternalLLMClient,
     InvalidLLMResponseError,
@@ -33,7 +34,10 @@ from backend.services.ranking_service import (
     RelevanceRanker,
     RelevanceRankingService,
 )
+from backend.services.report_site import ReportSiteResult, ReportSiteWriter
 from backend.services.seen_item_store import SeenItemStore
+from backend.services.source_registry import SourceRecord, SourceRegistry, SourceRegistryUpdateSummary
+from backend.services.topic_registry import HotspotDiscoveryService, TopicRecord, TopicRegistry
 from backend.services.media_signal_service import (
     EmptyMediaMentionsProvider,
     MediaMentionsProvider,
@@ -60,6 +64,9 @@ __all__ = [
     "InvalidLLMResponseError",
     "LLMClientError",
     "FeedbackService",
+    "HtmlReportMetadata",
+    "HtmlReportRenderer",
+    "HotspotDiscoveryService",
     "LLMRequest",
     "MediaMentionsProvider",
     "MediaSignal",
@@ -72,7 +79,14 @@ __all__ = [
     "RankedItem",
     "RelevanceRanker",
     "RelevanceRankingService",
+    "ReportSiteResult",
+    "ReportSiteWriter",
     "SeenItemStore",
+    "SourceRecord",
+    "SourceRegistry",
+    "SourceRegistryUpdateSummary",
+    "TopicRecord",
+    "TopicRegistry",
     "to_ranking_external_signals",
     "TruncatedLLMResponseError",
     "WeComPushService",

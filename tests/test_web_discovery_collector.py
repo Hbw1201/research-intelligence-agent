@@ -84,6 +84,7 @@ def make_settings(
     query_categories: str = "general,news,blog,dataset,benchmark,lab,company_research",
     results_per_query: int = 5,
     total_max_results: int = 30,
+    hotspot_discovery_enabled: bool = False,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -95,6 +96,7 @@ def make_settings(
         web_discovery_query_categories=query_categories,
         web_discovery_results_per_query=results_per_query,
         web_discovery_total_max_results=total_max_results,
+        hotspot_discovery_enabled=hotspot_discovery_enabled,
     )
 
 

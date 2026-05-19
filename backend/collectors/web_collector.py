@@ -13,6 +13,7 @@ from backend.collectors.page_fetcher import PageFetchResult, PageFetcher
 from backend.collectors.rss_discovery import discover_feed_urls
 from backend.config import Settings, get_settings
 from backend.services.item_fingerprint import normalize_canonical_url, normalize_title
+from backend.services.topic_registry import TopicRegistry
 from backend.search.web_query_planner import PlannedWebQuery, WebQueryPlanner
 from backend.search.web_result_classifier import WebResultClassifier
 from backend.search.search_result import SearchResult
@@ -43,7 +44,13 @@ class WebDiscoveryCollector(BaseCollector):
         self.settings = settings or get_settings()
         self.page_fetcher = page_fetcher
         self.content_extractor = content_extractor or ContentExtractor()
-        self.query_planner = query_planner or WebQueryPlanner(categories=self._query_categories())
+        self.query_planner = query_planner or WebQueryPlanner(
+            categories=self._query_categories(),
+            topic_registry=TopicRegistry(self.settings.topic_registry_path),
+            use_topic_registry=self.settings.hotspot_discovery_enabled,
+            topic_min_score=self.settings.hotspot_min_score,
+            topic_limit=self.settings.hotspot_max_topics,
+        )
         self.result_classifier = result_classifier or WebResultClassifier()
 
     async def collect(

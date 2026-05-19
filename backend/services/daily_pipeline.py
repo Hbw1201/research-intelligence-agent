@@ -12,6 +12,8 @@ from backend.services.digest_service import DigestItem
 from backend.services.item_fingerprint import normalize_canonical_url
 from backend.services.ranking_service import RankedItem, RelevanceRankingService
 from backend.services.seen_item_store import SeenItemStore
+from backend.services.source_registry import SourceRegistry, SourceRegistryUpdateSummary
+from backend.services.topic_registry import HotspotDiscoveryService, HotspotDiscoverySummary
 
 
 class CollectorProtocol(Protocol):
@@ -65,6 +67,8 @@ class DailyPipelineResult:
     digests: list[DigestItem]
     report: str
     deduplication_summary: DeduplicationSummary
+    source_registry_summary: SourceRegistryUpdateSummary | None = None
+    hotspot_discovery_summary: HotspotDiscoverySummary | None = None
     output_path: Path | None = None
 
 
@@ -80,6 +84,8 @@ class DailyPipelineOptions:
     max_failed_source_retries: int = 5
     failed_source_retry_delay_seconds: float = 2.0
     include_seen_items: bool = False
+    update_source_registry: bool = False
+    update_hotspots: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,8 @@ class DailyIntelligencePipeline:
         max_failed_source_retries: int = 5,
         failed_source_retry_delay_seconds: float = 2.0,
         seen_item_store: SeenItemStore | None = None,
+        source_registry: SourceRegistry | None = None,
+        hotspot_discovery_service: HotspotDiscoveryService | None = None,
     ) -> None:
         self.collectors = {name.strip().lower(): collector for name, collector in collectors.items()}
         self.digest_service = digest_service
@@ -110,6 +118,8 @@ class DailyIntelligencePipeline:
         self.max_failed_source_retries = max(0, max_failed_source_retries)
         self.failed_source_retry_delay_seconds = max(0.0, failed_source_retry_delay_seconds)
         self.seen_item_store = seen_item_store
+        self.source_registry = source_registry
+        self.hotspot_discovery_service = hotspot_discovery_service
 
     async def run(
         self,
@@ -119,6 +129,8 @@ class DailyIntelligencePipeline:
         sources: list[str] | None = None,
         output_path: str | Path | None = None,
         include_seen_items: bool = False,
+        update_source_registry: bool = False,
+        update_hotspots: bool = False,
     ) -> DailyPipelineResult:
         """Collect, deduplicate, rank, digest, format, and optionally save a daily report."""
         options = DailyPipelineOptions(
@@ -130,6 +142,8 @@ class DailyIntelligencePipeline:
             max_failed_source_retries=self.max_failed_source_retries,
             failed_source_retry_delay_seconds=self.failed_source_retry_delay_seconds,
             include_seen_items=include_seen_items,
+            update_source_registry=update_source_registry,
+            update_hotspots=update_hotspots,
         )
         if not options.keywords:
             raise ValueError("At least one keyword is required.")
@@ -142,6 +156,8 @@ class DailyIntelligencePipeline:
         collection_result = await self._collect_items(query, collection_limit, selected_sources, options)
         collected_items = collection_result.items
         collector_errors = collection_result.collector_errors
+        source_registry_summary = self._update_source_registry(collected_items, options.update_source_registry)
+        hotspot_discovery_summary = self._update_hotspots(collected_items, options.update_hotspots)
         if not collected_items and len(collector_errors) == len(selected_sources):
             failed_sources = ", ".join(sorted(collector_errors))
             raise RuntimeError(f"All selected collectors failed: {failed_sources}")
@@ -159,6 +175,8 @@ class DailyIntelligencePipeline:
                 [],
                 collector_errors,
                 deduplication_summary=deduplication_summary,
+                source_registry_summary=source_registry_summary,
+                hotspot_discovery_summary=hotspot_discovery_summary,
                 no_new_items=True,
             )
             saved_path = self.save_report(report, options.output_path) if options.output_path else None
@@ -171,6 +189,8 @@ class DailyIntelligencePipeline:
                 digests=[],
                 report=report,
                 deduplication_summary=deduplication_summary,
+                source_registry_summary=source_registry_summary,
+                hotspot_discovery_summary=hotspot_discovery_summary,
                 output_path=saved_path,
             )
 
@@ -196,6 +216,8 @@ class DailyIntelligencePipeline:
             digests,
             collector_errors,
             deduplication_summary=deduplication_summary,
+            source_registry_summary=source_registry_summary,
+            hotspot_discovery_summary=hotspot_discovery_summary,
         )
         saved_path = self.save_report(report, options.output_path) if options.output_path else None
 
@@ -208,6 +230,8 @@ class DailyIntelligencePipeline:
             digests=digests,
             report=report,
             deduplication_summary=deduplication_summary,
+            source_registry_summary=source_registry_summary,
+            hotspot_discovery_summary=hotspot_discovery_summary,
             output_path=saved_path,
         )
 
@@ -297,6 +321,8 @@ class DailyIntelligencePipeline:
         digests: list[DigestItem],
         collector_errors: dict[str, str] | None = None,
         deduplication_summary: DeduplicationSummary | None = None,
+        source_registry_summary: SourceRegistryUpdateSummary | None = None,
+        hotspot_discovery_summary: HotspotDiscoverySummary | None = None,
         no_new_items: bool = False,
     ) -> str:
         """Format the final markdown daily report through the digest service."""
@@ -309,6 +335,12 @@ class DailyIntelligencePipeline:
 
         if deduplication_summary is not None:
             sections.append(self._format_deduplication_summary(deduplication_summary))
+
+        if source_registry_summary is not None:
+            sections.append(self._format_source_registry_summary(source_registry_summary))
+
+        if hotspot_discovery_summary is not None:
+            sections.append(self._format_hotspot_discovery_summary(hotspot_discovery_summary))
 
         if not collector_errors:
             return "\n".join(sections)
@@ -324,6 +356,28 @@ class DailyIntelligencePipeline:
             return items
         return self.seen_item_store.filter_new_items(items)
 
+    def _update_source_registry(
+        self,
+        items: list[ResearchItem],
+        update_source_registry: bool,
+    ) -> SourceRegistryUpdateSummary | None:
+        if not update_source_registry:
+            return None
+        if self.source_registry is None:
+            return SourceRegistryUpdateSummary()
+        return self.source_registry.import_from_web_results(items)
+
+    def _update_hotspots(
+        self,
+        items: list[ResearchItem],
+        update_hotspots: bool,
+    ) -> HotspotDiscoverySummary | None:
+        if not update_hotspots:
+            return None
+        if self.hotspot_discovery_service is None:
+            return HotspotDiscoverySummary()
+        return self.hotspot_discovery_service.update_registry(items)
+
     @staticmethod
     def _format_deduplication_summary(summary: DeduplicationSummary) -> str:
         return "\n".join(
@@ -333,6 +387,30 @@ class DailyIntelligencePipeline:
                 f"- Collected items: {summary.collected_items}",
                 f"- Duplicates skipped: {summary.duplicates_skipped}",
                 f"- New items included: {summary.new_items_included}",
+            ]
+        )
+
+    @staticmethod
+    def _format_source_registry_summary(summary: SourceRegistryUpdateSummary) -> str:
+        return "\n".join(
+            [
+                "",
+                "## Source registry updates",
+                f"- New sources added: {summary.new_sources_added}",
+                f"- Existing sources updated: {summary.existing_sources_updated}",
+                f"- Blocked domains skipped: {summary.blocked_domains_skipped}",
+            ]
+        )
+
+    @staticmethod
+    def _format_hotspot_discovery_summary(summary: HotspotDiscoverySummary) -> str:
+        return "\n".join(
+            [
+                "",
+                "## Hotspot discovery updates",
+                f"- Candidates considered: {summary.candidates_considered}",
+                f"- New topics added: {summary.new_topics_added}",
+                f"- Existing topics updated: {summary.existing_topics_updated}",
             ]
         )
 

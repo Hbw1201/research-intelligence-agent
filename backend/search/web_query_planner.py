@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 DEFAULT_QUERY_CATEGORIES = [
@@ -23,12 +24,31 @@ class PlannedWebQuery:
     category: str
 
 
+class TopicRegistryProtocol:
+    """Small protocol-like surface used to avoid coupling planner to storage details."""
+
+    def list_enabled(self, min_score: float = 0.0, limit: int | None = None) -> list[Any]:
+        """Return enabled topic records."""
+
+
 class WebQueryPlanner:
     """Create a bounded set of broad web-discovery queries."""
 
-    def __init__(self, categories: list[str] | None = None, max_queries: int = 10) -> None:
+    def __init__(
+        self,
+        categories: list[str] | None = None,
+        max_queries: int = 10,
+        topic_registry: TopicRegistryProtocol | None = None,
+        use_topic_registry: bool = False,
+        topic_min_score: float = 0.2,
+        topic_limit: int = 8,
+    ) -> None:
         self.categories = self._normalize_categories(categories or DEFAULT_QUERY_CATEGORIES)
         self.max_queries = max(1, max_queries)
+        self.topic_registry = topic_registry
+        self.use_topic_registry = use_topic_registry
+        self.topic_min_score = max(0.0, topic_min_score)
+        self.topic_limit = max(0, topic_limit)
 
     def plan(self, keywords: str | list[str], user_profile: str | None = None) -> list[str]:
         """Return planned query strings for compatibility with simple callers."""
@@ -82,6 +102,12 @@ class WebQueryPlanner:
 
         for term in profile_terms:
             add(f"{term} {self._head_tail_query(base_query)}", "general")
+
+        for topic in self._registry_topics():
+            if self._topic_matches_query(topic, base_query):
+                add(f"{topic.topic} {self._head_tail_query(base_query)}", "hotspot")
+            else:
+                add(topic.topic, "hotspot")
 
         return planned
 
@@ -144,5 +170,16 @@ class WebQueryPlanner:
                 seen.add(key)
         return terms[:2]
 
+    def _registry_topics(self) -> list[Any]:
+        if not self.use_topic_registry or self.topic_registry is None or self.topic_limit <= 0:
+            return []
+        return self.topic_registry.list_enabled(min_score=self.topic_min_score, limit=self.topic_limit)
 
-__all__ = ["DEFAULT_QUERY_CATEGORIES", "PlannedWebQuery", "WebQueryPlanner"]
+    @staticmethod
+    def _topic_matches_query(topic: Any, base_query: str) -> bool:
+        text = base_query.casefold()
+        candidates = [topic.topic, *topic.aliases]
+        return any(candidate.casefold() in text for candidate in candidates)
+
+
+__all__ = ["DEFAULT_QUERY_CATEGORIES", "PlannedWebQuery", "TopicRegistryProtocol", "WebQueryPlanner"]

@@ -10,6 +10,7 @@ from backend.collectors.errors import ConciseCollectorError
 from backend.services.daily_pipeline import DailyIntelligencePipeline
 from backend.services.digest_service import DigestItem
 from backend.services.seen_item_store import SeenItemStore
+from backend.services.source_registry import SourceRegistry
 
 
 class FakeCollector:
@@ -542,3 +543,43 @@ async def test_pipeline_include_seen_keeps_old_items(tmp_path: Path) -> None:
     assert result.deduplication_summary.duplicates_skipped == 0
     assert result.deduplication_summary.new_items_included == 1
     assert len(digest_service.summarize_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_pipeline_update_source_registry_adds_report_section(tmp_path: Path) -> None:
+    item = ResearchItem(
+        title="Dataset source",
+        abstract="A single-cell dataset.",
+        url="https://zenodo.org/records/123?utm_source=search",
+        source_name="web",
+        source_type="dataset",
+        item_type="dataset",
+        authors=[],
+        published_at=datetime(2026, 5, 19, tzinfo=timezone.utc),
+        raw_text="A single-cell dataset.",
+        external_id=None,
+        keywords=["single-cell"],
+        metadata={"search_query": "single-cell dataset", "search_category": "dataset"},
+    )
+    registry = SourceRegistry(tmp_path / "source_registry.json")
+    pipeline = DailyIntelligencePipeline(
+        collectors={"web": FakeCollector("web", [item])},
+        digest_service=FakeDigestService(),
+        source_registry=registry,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(
+        keywords=["single-cell"],
+        max_items=5,
+        sources=["web"],
+        update_source_registry=True,
+    )
+
+    assert result.source_registry_summary is not None
+    assert result.source_registry_summary.new_sources_added == 1
+    assert result.source_registry_summary.existing_sources_updated == 0
+    assert result.source_registry_summary.blocked_domains_skipped == 0
+    assert "## Source registry updates" in result.report
+    assert "- New sources added: 1" in result.report
+    assert registry.load()[0].url == "https://zenodo.org/records/123"
