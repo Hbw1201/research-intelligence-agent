@@ -1,0 +1,170 @@
+{
+  "topics": [
+    {
+      "topic": "perturbation prediction",
+      "language": "en",
+      "aliases": [
+        "cell perturbation prediction",
+        "perturbation response prediction"
+      ],
+      "score": 1.0,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 1,
+      "item_count": 2,
+      "enabled": true
+    },
+    {
+      "topic": "single-cell foundation model",
+      "language": "en",
+      "aliases": [
+        "single-cell FM"
+      ],
+      "score": 1.0,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 1,
+      "item_count": 2,
+      "enabled": true
+    },
+    {
+      "topic": "virtual cell",
+      "language": "en",
+      "aliases": [
+        "AI virtual cell",
+        "virtual cell model"
+      ],
+      "score": 0.85,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 1,
+      "item_count": 1,
+      "enabled": true
+    },
+    {
+      "topic": "AI for biology",
+      "language": "en",
+      "aliases": [
+        "AI biology",
+        "AI4Bio",
+        "artificial intelligence for biology"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "bioinformatics foundation model",
+      "language": "en",
+      "aliases": [
+        "bioinformatics large model",
+        "bioinformatics FM"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "drug response",
+      "language": "en",
+      "aliases": [
+        "drug response prediction",
+        "therapy response"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "spatial transcriptomics",
+      "language": "en",
+      "aliases": [
+        "spatial omics",
+        "spatial transcriptome"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "单细胞 基础模型",
+      "language": "zh",
+      "aliases": [
+        "单细胞大模型"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "扰动预测",
+      "language": "zh",
+      "aliases": [
+        "细胞扰动预测",
+        "扰动响应预测"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "生信 大模型",
+      "language": "zh",
+      "aliases": [
+        "生物信息 大模型"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "空间转录组",
+      "language": "zh",
+      "aliases": [
+        "空间组学",
+        "空间转录组学"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    },
+    {
+      "topic": "药物反应",
+      "language": "zh",
+      "aliases": [
+        "药物响应",
+        "药物反应预测"
+      ],
+      "score": 0.6,
+      "first_seen_at": "2026-05-19T15:35:57.133996Z",
+      "last_seen_at": "2026-05-19T15:35:57.154517Z",
+      "source_count": 0,
+      "item_count": 0,
+      "enabled": true
+    }
+  ]
+}
