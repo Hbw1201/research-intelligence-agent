@@ -77,6 +77,27 @@ def test_run_daily_digest_parse_args_accepts_push_wecom(monkeypatch: pytest.Monk
     assert args.wecom_title == "今日科研情报"
 
 
+def test_run_daily_digest_parse_args_accepts_seen_item_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_daily_digest.py",
+            "--keywords",
+            "single-cell",
+            "--seen-store-path",
+            "tmp/seen_items.jsonl",
+            "--include-seen",
+            "--mark-seen",
+        ],
+    )
+
+    args = run_daily_digest.parse_args()
+
+    assert args.seen_store_path == "tmp/seen_items.jsonl"
+    assert args.include_seen is True
+    assert args.mark_seen is True
+
+
 @pytest.mark.anyio
 async def test_run_daily_digest_push_wecom_uses_chunked_markdown_send(
     monkeypatch: pytest.MonkeyPatch,

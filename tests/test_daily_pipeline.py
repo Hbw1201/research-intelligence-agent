@@ -8,6 +8,7 @@ import pytest
 from backend.collectors.base import ResearchItem
 from backend.services.daily_pipeline import DailyIntelligencePipeline
 from backend.services.digest_service import DigestItem
+from backend.services.seen_item_store import SeenItemStore
 
 
 class FakeCollector:
@@ -152,6 +153,10 @@ async def test_pipeline_deduplicates_by_url() -> None:
     assert len(result.unique_items) == 1
     assert result.unique_items[0].title == "First copy"
     assert len(digest_service.summarize_calls[0]["items"]) == 1
+    assert "## Deduplication summary" in result.report
+    assert "- Collected items: 2" in result.report
+    assert "- Duplicates skipped: 1" in result.report
+    assert "- New items included: 1" in result.report
 
 
 @pytest.mark.anyio
@@ -445,3 +450,52 @@ def test_pipeline_deduplicates_web_urls_after_removing_tracking_params() -> None
 
     assert len(unique_items) == 1
     assert unique_items[0].title == "First web result"
+
+
+@pytest.mark.anyio
+async def test_pipeline_skips_same_url_on_second_run(tmp_path: Path) -> None:
+    item = make_item("Seen paper", "https://example.com/seen?utm_source=lab", "seen")
+    digest_service = FakeDigestService()
+    store = SeenItemStore(tmp_path / "seen_items.jsonl")
+    pipeline = DailyIntelligencePipeline(
+        collectors={"web": FakeCollector("web", [item])},
+        digest_service=digest_service,
+        seen_item_store=store,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    first = await pipeline.run(keywords=["graph"], max_items=5, sources=["web"])
+    store.mark_seen(first.included_items, pushed=True)
+    second = await pipeline.run(keywords=["graph"], max_items=5, sources=["web"])
+
+    assert len(first.included_items) == 1
+    assert second.included_items == []
+    assert second.ranked_items == []
+    assert second.digests == []
+    assert second.deduplication_summary.collected_items == 1
+    assert second.deduplication_summary.duplicates_skipped == 1
+    assert second.deduplication_summary.new_items_included == 0
+    assert "No new items after deduplication." in second.report
+    assert len(digest_service.summarize_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_pipeline_include_seen_keeps_old_items(tmp_path: Path) -> None:
+    item = make_item("Old paper", "https://example.com/old?utm_campaign=lab", "old")
+    digest_service = FakeDigestService()
+    store = SeenItemStore(tmp_path / "seen_items.jsonl")
+    store.mark_seen([item], pushed=True)
+    pipeline = DailyIntelligencePipeline(
+        collectors={"web": FakeCollector("web", [item])},
+        digest_service=digest_service,
+        seen_item_store=store,
+        failed_source_retry_delay_seconds=0,
+    )
+
+    result = await pipeline.run(keywords=["graph"], max_items=5, sources=["web"], include_seen_items=True)
+
+    assert len(result.included_items) == 1
+    assert result.included_items[0].title == "Old paper"
+    assert result.deduplication_summary.duplicates_skipped == 0
+    assert result.deduplication_summary.new_items_included == 1
+    assert len(digest_service.summarize_calls) == 1

@@ -21,6 +21,7 @@ from backend.search.searxng_client import SearxNGClient
 from backend.services.daily_pipeline import CollectorProtocol, DailyIntelligencePipeline
 from backend.services.digest_service import ChineseDigestService
 from backend.services.llm_client import ExternalLLMClient
+from backend.services.seen_item_store import SeenItemStore
 from backend.services.wecom import PushMessage, WeComPushService
 
 
@@ -51,6 +52,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--push-wecom", action="store_true", help="Push the generated report to WeCom.")
     parser.add_argument("--wecom-title", default="今日科研情报", help="Title used for the WeCom push message.")
+    parser.add_argument(
+        "--seen-store-path",
+        default=None,
+        help="JSONL path used to remember items across digest runs.",
+    )
+    parser.add_argument("--include-seen", action="store_true", help="Include items already present in the seen-item store.")
+    parser.add_argument(
+        "--mark-seen",
+        action="store_true",
+        help="Mark included items as seen after report generation succeeds.",
+    )
     return parser.parse_args()
 
 
@@ -99,14 +111,19 @@ def build_collectors(sources: list[str], rss_feed_urls: list[str]) -> dict[str, 
 
 async def run() -> None:
     args = parse_args()
+    settings = get_settings()
     keywords = split_csv(args.keywords)
     sources = split_csv(args.sources)
-    collectors = build_collectors(sources, args.rss_feed_url)
+    collectors = build_collectors(sources, getattr(args, "rss_feed_url", []))
     digest_service = ChineseDigestService(ExternalLLMClient())
+    seen_store_path = getattr(args, "seen_store_path", None) or settings.seen_item_store_path
+    seen_item_store = SeenItemStore(seen_store_path)
     pipeline = DailyIntelligencePipeline(
         collectors=collectors,
         digest_service=digest_service,
+        seen_item_store=seen_item_store,
     )
+    include_seen_items = getattr(args, "include_seen", False) or not settings.filter_seen_items
 
     result = await pipeline.run(
         keywords=keywords,
@@ -114,12 +131,23 @@ async def run() -> None:
         max_items=args.max_items,
         sources=sources,
         output_path=args.output_path,
+        include_seen_items=include_seen_items,
     )
     print(result.report)
     if result.output_path:
         print(f"\nSaved report: {result.output_path}")
+    included_items = getattr(result, "included_items", None)
+    if included_items:
+        seen_item_store.mark_seen(included_items, pushed=False)
+        if getattr(args, "mark_seen", False):
+            print(f"\nMarked {len(included_items)} items as seen.")
     if args.push_wecom:
+        if included_items == [] and not getattr(args, "include_seen", False):
+            print("\nSkipped WeCom push: No new items after deduplication.")
+            return
         await WeComPushService().send_markdown(PushMessage(title=args.wecom_title, markdown=result.report))
+        if included_items:
+            seen_item_store.mark_seen(included_items, pushed=True)
         print("\nPushed WeCom markdown digest.")
 
 

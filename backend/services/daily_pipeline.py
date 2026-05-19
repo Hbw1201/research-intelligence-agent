@@ -5,12 +5,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.collectors.base import ResearchItem
 from backend.collectors.errors import concise_error_message, should_retry_collector_error
 from backend.services.digest_service import DigestItem
+from backend.services.item_fingerprint import normalize_canonical_url
 from backend.services.ranking_service import RankedItem, RelevanceRankingService
+from backend.services.seen_item_store import SeenItemStore
 
 
 class CollectorProtocol(Protocol):
@@ -44,15 +45,26 @@ class DigestServiceProtocol(Protocol):
 
 
 @dataclass(frozen=True)
+class DeduplicationSummary:
+    """Reportable deduplication counters for a pipeline run."""
+
+    collected_items: int
+    duplicates_skipped: int
+    new_items_included: int
+
+
+@dataclass(frozen=True)
 class DailyPipelineResult:
     """Structured result for the manual daily intelligence run."""
 
     collected_items: list[ResearchItem]
     collector_errors: dict[str, str]
     unique_items: list[ResearchItem]
+    included_items: list[ResearchItem]
     ranked_items: list[RankedItem]
     digests: list[DigestItem]
     report: str
+    deduplication_summary: DeduplicationSummary
     output_path: Path | None = None
 
 
@@ -67,6 +79,7 @@ class DailyPipelineOptions:
     output_path: str | Path | None = None
     max_failed_source_retries: int = 5
     failed_source_retry_delay_seconds: float = 2.0
+    include_seen_items: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,7 @@ class DailyIntelligencePipeline:
         candidate_pool_multiplier: int = 5,
         max_failed_source_retries: int = 5,
         failed_source_retry_delay_seconds: float = 2.0,
+        seen_item_store: SeenItemStore | None = None,
     ) -> None:
         self.collectors = {name.strip().lower(): collector for name, collector in collectors.items()}
         self.digest_service = digest_service
@@ -95,6 +109,7 @@ class DailyIntelligencePipeline:
         self.candidate_pool_multiplier = max(1, candidate_pool_multiplier)
         self.max_failed_source_retries = max(0, max_failed_source_retries)
         self.failed_source_retry_delay_seconds = max(0.0, failed_source_retry_delay_seconds)
+        self.seen_item_store = seen_item_store
 
     async def run(
         self,
@@ -103,6 +118,7 @@ class DailyIntelligencePipeline:
         max_items: int = 10,
         sources: list[str] | None = None,
         output_path: str | Path | None = None,
+        include_seen_items: bool = False,
     ) -> DailyPipelineResult:
         """Collect, deduplicate, rank, digest, format, and optionally save a daily report."""
         options = DailyPipelineOptions(
@@ -113,6 +129,7 @@ class DailyIntelligencePipeline:
             output_path=output_path,
             max_failed_source_retries=self.max_failed_source_retries,
             failed_source_retry_delay_seconds=self.failed_source_retry_delay_seconds,
+            include_seen_items=include_seen_items,
         )
         if not options.keywords:
             raise ValueError("At least one keyword is required.")
@@ -129,29 +146,68 @@ class DailyIntelligencePipeline:
             failed_sources = ", ".join(sorted(collector_errors))
             raise RuntimeError(f"All selected collectors failed: {failed_sources}")
 
-        unique_items = self.deduplicate_items(collected_items)
+        deduplicated_items = self.deduplicate_items(collected_items)
+        unique_items = self._filter_seen_items(deduplicated_items, include_seen_items=options.include_seen_items)
+        if not unique_items:
+            deduplication_summary = DeduplicationSummary(
+                collected_items=len(collected_items),
+                duplicates_skipped=len(collected_items),
+                new_items_included=0,
+            )
+            report = self.format_report(
+                options.keywords,
+                [],
+                collector_errors,
+                deduplication_summary=deduplication_summary,
+                no_new_items=True,
+            )
+            saved_path = self.save_report(report, options.output_path) if options.output_path else None
+            return DailyPipelineResult(
+                collected_items=collected_items,
+                collector_errors=collector_errors,
+                unique_items=unique_items,
+                included_items=[],
+                ranked_items=[],
+                digests=[],
+                report=report,
+                deduplication_summary=deduplication_summary,
+                output_path=saved_path,
+            )
+
         ranked_items = self.ranking_service.rank_items(
             unique_items,
             user_profile=options.user_profile,
             keywords=options.keywords,
             max_items=options.max_items,
         )
-        top_items = [ranked.item for ranked in ranked_items]
+        included_items = [ranked.item for ranked in ranked_items]
         digests = await self.digest_service.summarize_items(
-            top_items,
+            included_items,
             user_profile=options.user_profile,
             max_items=options.max_items,
         )
-        report = self.format_report(options.keywords, digests, collector_errors)
+        deduplication_summary = DeduplicationSummary(
+            collected_items=len(collected_items),
+            duplicates_skipped=len(collected_items) - len(unique_items),
+            new_items_included=len(included_items),
+        )
+        report = self.format_report(
+            options.keywords,
+            digests,
+            collector_errors,
+            deduplication_summary=deduplication_summary,
+        )
         saved_path = self.save_report(report, options.output_path) if options.output_path else None
 
         return DailyPipelineResult(
             collected_items=collected_items,
             collector_errors=collector_errors,
             unique_items=unique_items,
+            included_items=included_items,
             ranked_items=ranked_items,
             digests=digests,
             report=report,
+            deduplication_summary=deduplication_summary,
             output_path=saved_path,
         )
 
@@ -240,18 +296,45 @@ class DailyIntelligencePipeline:
         keywords: list[str],
         digests: list[DigestItem],
         collector_errors: dict[str, str] | None = None,
+        deduplication_summary: DeduplicationSummary | None = None,
+        no_new_items: bool = False,
     ) -> str:
         """Format the final markdown daily report through the digest service."""
         topic = ", ".join(keywords)
         title = f"Daily Research Intelligence - {topic}" if topic else "Daily Research Intelligence"
-        report = self.digest_service.format_daily_digest(digests, title=title)
+        sections = [self.digest_service.format_daily_digest(digests, title=title)]
+
+        if no_new_items:
+            sections.append("\n".join(["", "No new items after deduplication."]))
+
+        if deduplication_summary is not None:
+            sections.append(self._format_deduplication_summary(deduplication_summary))
+
         if not collector_errors:
-            return report
+            return "\n".join(sections)
 
         warning_lines = ["", "## Collector warnings"]
         for source, error in sorted(collector_errors.items()):
             warning_lines.append(f"- {source}: {error}")
-        return f"{report}\n" + "\n".join(warning_lines)
+        sections.append("\n".join(warning_lines))
+        return "\n".join(sections)
+
+    def _filter_seen_items(self, items: list[ResearchItem], include_seen_items: bool) -> list[ResearchItem]:
+        if include_seen_items or self.seen_item_store is None:
+            return items
+        return self.seen_item_store.filter_new_items(items)
+
+    @staticmethod
+    def _format_deduplication_summary(summary: DeduplicationSummary) -> str:
+        return "\n".join(
+            [
+                "",
+                "## Deduplication summary",
+                f"- Collected items: {summary.collected_items}",
+                f"- Duplicates skipped: {summary.duplicates_skipped}",
+                f"- New items included: {summary.new_items_included}",
+            ]
+        )
 
     @staticmethod
     def save_report(report: str, output_path: str | Path) -> Path:
@@ -290,42 +373,7 @@ class DailyIntelligencePipeline:
 
     @staticmethod
     def _normalize_url(url: str | None) -> str:
-        if not url:
-            return ""
-        parsed = urlsplit(url.strip())
-        if not parsed.scheme and not parsed.netloc:
-            return url.strip().rstrip("/").lower()
-
-        tracking_params = {
-            "fbclid",
-            "gclid",
-            "mc_cid",
-            "mc_eid",
-            "ref",
-            "spm",
-            "utm_id",
-            "utm_source",
-            "utm_medium",
-            "utm_campaign",
-            "utm_term",
-            "utm_content",
-        }
-        query_params = [
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if not key.lower().startswith("utm_") and key.lower() not in tracking_params
-        ]
-        normalized_path = parsed.path.rstrip("/") or ""
-        normalized = urlunsplit(
-            (
-                parsed.scheme.lower(),
-                parsed.netloc.lower(),
-                normalized_path,
-                urlencode(query_params, doseq=True),
-                "",
-            )
-        )
-        return normalized.rstrip("/").lower()
+        return normalize_canonical_url(url)
 
     @staticmethod
     def _normalize_external_id(external_id: str | None) -> str:
@@ -351,5 +399,6 @@ __all__ = [
     "DailyIntelligencePipeline",
     "DailyPipelineOptions",
     "DailyPipelineResult",
+    "DeduplicationSummary",
     "DigestServiceProtocol",
 ]

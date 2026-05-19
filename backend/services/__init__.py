@@ -13,6 +13,7 @@ from backend.services.daily_pipeline import (
     DailyIntelligencePipeline,
     DailyPipelineOptions,
     DailyPipelineResult,
+    DeduplicationSummary,
     DigestServiceProtocol,
 )
 from backend.services.digest_service import ChineseDigestService, DigestItem
@@ -32,6 +33,7 @@ from backend.services.ranking_service import (
     RelevanceRanker,
     RelevanceRankingService,
 )
+from backend.services.seen_item_store import SeenItemStore
 from backend.services.media_signal_service import (
     EmptyMediaMentionsProvider,
     MediaMentionsProvider,
@@ -50,6 +52,7 @@ __all__ = [
     "DailyIntelligencePipeline",
     "DailyPipelineOptions",
     "DailyPipelineResult",
+    "DeduplicationSummary",
     "DigestItem",
     "DigestServiceProtocol",
     "EmptyMediaMentionsProvider",
@@ -69,6 +72,7 @@ __all__ = [
     "RankedItem",
     "RelevanceRanker",
     "RelevanceRankingService",
+    "SeenItemStore",
     "to_ranking_external_signals",
     "TruncatedLLMResponseError",
     "WeComPushService",

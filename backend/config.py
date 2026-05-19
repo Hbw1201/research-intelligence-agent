@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     web_discovery_fetch_pages: bool = False
     web_page_timeout_seconds: float = 30.0
     web_page_max_bytes: int = 2_000_000
+    web_discovery_query_expansion: bool = True
+    web_discovery_query_categories: str = "general,news,blog,dataset,benchmark,lab,company_research"
+    web_discovery_results_per_query: int = 5
+    web_discovery_total_max_results: int = 30
+
+    seen_item_store_path: str = "data/seen_items.jsonl"
+    filter_seen_items: bool = True
 
 
 @lru_cache
